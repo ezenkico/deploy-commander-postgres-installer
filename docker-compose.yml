@@ -3,9 +3,9 @@ version: "3.9"
 services:
   postgres-installer:
     image: node:20
-    working_dir: /app
+    working_dir: /app/deploy-commander-postgres-installer/postgres-interface
     volumes:
-      - ./postgres-interface:/app
+      - ../:/app
       - npm-postgres-cache:/root/.npm
     command: >
       sh -lc "npm install && npm run dev -- --host 0.0.0.0 --port 5173 --strictPort"
