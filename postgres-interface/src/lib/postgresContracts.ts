@@ -17,7 +17,6 @@ export interface RunnerService {
   image: string;
   aliases?: string[];
   role?: 'service' | 'runner';
-  depends_on?: string[];
   connections?: PlatformConnection[];
   resources?: Array<{
     resource_type: string;
