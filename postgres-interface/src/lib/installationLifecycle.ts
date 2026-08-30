@@ -206,9 +206,9 @@ export async function teardownPostgres(
     if (isRecord(error) && error.status === RUN_FAILED && state) {
       await transitionPrimaryState(deps.caller, state.operationId, 'teardown-running', {
         phase: 'teardown-failed', runId: null, resourceId: state.resourceId, initializedAt: state.initializedAt,
-      }).catch(() => undefined);
-      await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required').catch(() => undefined);
-      await deleteOperation(deps.caller, operation.operationId).catch(() => undefined);
+      });
+      await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
+      await deleteOperation(deps.caller, operation.operationId);
     }
     throw new Error(TEARDOWN_ERROR);
   }
@@ -302,9 +302,9 @@ export async function recoverTeardownOnBoot(
     if (state?.phase === 'teardown-running') await transitionPrimaryState(deps.caller, state.operationId, 'teardown-running', {
       phase: 'teardown-failed', runId: null, resourceId: state.resourceId, initializedAt: state.initializedAt,
     });
-  } else if (state) {
-    await deletePrimaryState(deps.caller, state.operationId);
-    if (storage && managerId) clearPermission(storage, managerId, state.resourceId ?? operation.resourceId);
+  } else {
+    if (state) await deletePrimaryState(deps.caller, state.operationId);
+    if (storage && managerId) clearPermission(storage, managerId, state?.resourceId ?? operation.resourceId);
   }
   await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
   await deleteOperation(deps.caller, operation.operationId);

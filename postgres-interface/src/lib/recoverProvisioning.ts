@@ -171,7 +171,7 @@ async function clearLock(deps: ProvisioningRecoveryDeps, operation: ConnectionOp
   try {
     await deleteOperation(deps.caller, operation.operationId);
   } catch {
-    // A confirmed connection/cleanup is authoritative; retain only a stale lock.
+    throw recoveryError();
   }
 }
 

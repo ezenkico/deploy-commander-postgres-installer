@@ -123,7 +123,7 @@ describe('recoverProvisioning', () => {
     expect(d.caller.databaseQuery).not.toHaveBeenCalled();
   });
 
-  it('returns a valid existing connection and treats lock deletion as best effort', async () => {
+  it('requires recovery when a valid existing connection cannot release its lock', async () => {
     const full = { connection: {
       id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
       external: false, created_at: 'now', updated_at: 'now',
@@ -135,7 +135,7 @@ describe('recoverProvisioning', () => {
       getConnection: vi.fn().mockResolvedValue(full),
       databaseQuery: vi.fn().mockRejectedValue(new Error('lock unavailable')),
     } as unknown as RPCCaller });
-    await expect(recoverProvisioning(d, operation)).resolves.toEqual({ kind: 'connection', value: full });
+    await expect(recoverProvisioning(d, operation)).rejects.toThrow('PostgreSQL recovery is required');
     expect(d.caller.start).not.toHaveBeenCalled();
   });
 

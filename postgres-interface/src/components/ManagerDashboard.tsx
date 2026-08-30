@@ -52,6 +52,15 @@ export default function ManagerDashboard({
         <button type="button" disabled={busy} onClick={onRetry} className={`${buttonClass('secondary')} mt-6`}>Retry recovery</button>
       </section>
     );
+  } else if (error || busy) {
+    content = (
+      <section className="rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
+        <p className="text-sm font-medium uppercase tracking-wide text-amber-700">Recovery</p>
+        <h2 className="mt-1 text-2xl font-semibold text-slate-900">PostgreSQL installation needs recovery</h2>
+        <p className="mt-3 text-sm text-amber-800">{error ?? 'The installation state is incomplete. A PostgreSQL operation is still in progress.'}</p>
+        <button type="button" disabled={busy} onClick={onRetry} className={`${buttonClass('secondary')} mt-6`}>Retry recovery</button>
+      </section>
+    );
   } else if (ready) {
     content = (
       <section className="rounded-2xl border border-emerald-200 bg-white p-6 shadow-sm">
