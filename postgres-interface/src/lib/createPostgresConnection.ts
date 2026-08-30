@@ -11,6 +11,7 @@ import {
 } from './provisioningJournal';
 import { parsePlatformConnection, type PlatformConnection } from './postgresContracts';
 import type { PrimaryState } from './primaryState';
+import { findPrimaryResource, readPrimaryState } from './primaryState';
 import type { RunEventSource, WaitOptions } from './runMonitor';
 import { findCorrelatedRun } from './recoverProvisioning';
 
@@ -182,6 +183,58 @@ function connectionBelongsToOperation(value: RPC.CreateConnection, operation: Co
     && value.config.metadata.username === operation.username;
 }
 
+interface RevalidatedInstallation {
+  primary: ReadyPrimaryState;
+  resource: RPC.ResourceItem;
+  platform: PlatformConnection;
+}
+
+/** Read installation identity again after taking the manager-wide lock.
+ * The request object is UI input and can be stale while another lifecycle
+ * operation changes the resource or manager-owned state. */
+async function revalidateInstallation(
+  caller: RPCCaller,
+  expected: ConnectionRequest,
+): Promise<RevalidatedInstallation> {
+  let primary: PrimaryState | null;
+  let resource: RPC.ResourceItem | null;
+  try {
+    primary = await readPrimaryState(caller);
+    resource = await findPrimaryResource(caller);
+  } catch {
+    throw new Error('Invalid ready PostgreSQL state');
+  }
+  if (primary === null || primary.phase !== 'ready'
+    || !resource || resource.id !== expected.resource.id
+    || primary.resourceId !== resource.id) {
+    throw new Error('Invalid ready PostgreSQL state');
+  }
+
+  let details: unknown;
+  try {
+    details = await caller.getResource(resource.id);
+  } catch {
+    throw new Error('Invalid ready PostgreSQL state');
+  }
+  if (!isRecord(details) || !isRecord(details.config)
+    || !Object.prototype.hasOwnProperty.call(details.config, 'platform_connection')) {
+    throw new Error('Invalid ready PostgreSQL state');
+  }
+  let platform: PlatformConnection;
+  try {
+    platform = parsePlatformConnection(details.config.platform_connection);
+  } catch {
+    throw new Error('Invalid ready PostgreSQL state');
+  }
+  if (!isNonBlank(primary.operationId) || !isNonBlank(primary.runId)
+    || !isNonBlank(primary.initializedAt) || !isNonBlank(primary.resourceId)
+    || !isNonBlank(primary.updatedAt) || !isNonBlank(primary.credentials.username)
+    || !isNonBlank(primary.credentials.password)) {
+    throw new Error('Invalid ready PostgreSQL state');
+  }
+  return { primary: primary as ReadyPrimaryState, resource, platform };
+}
+
 /** Find and validate the caller-owned, non-external connection for a resource. */
 export async function findExistingConnection(
   caller: RPCCaller,
@@ -296,9 +349,14 @@ async function cleanUpRacedProvision(
     await deps.waitForRun(deps.caller, deps.events, cleanupRunId, { signal: deps.signal });
   } catch (error) {
     if (isAbort(error)) throw error;
-    await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', {
-      phase: 'cleanup-required', cleanupRunId: null,
-    }).catch(() => undefined);
+    if (isRecord(error) && error.status === 3) {
+      await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', {
+        phase: 'cleanup-required', cleanupRunId: null,
+      }).catch(() => undefined);
+    }
+    // A transient monitoring failure does not prove the runner failed. Keep
+    // cleanup-running and the exact run id so recovery can resume monitoring
+    // without overlapping cleanup runs.
     throw new Error(CLEANUP_ERROR);
   }
   try {
@@ -346,12 +404,11 @@ export async function createPostgresConnection(
   }
 
   // Revalidate the caller-provided ready identity after taking the manager-wide lock.
-  let revalidatedPlatform: PlatformConnection;
+  let revalidatedInstallation: RevalidatedInstallation;
   let plan: ReturnType<typeof buildProvisionPlan>;
   try {
-    revalidatedPlatform = assertRequest(request);
-    if (revalidatedPlatform.data.network !== platform.data.network) throw new Error('Invalid ready PostgreSQL state');
-    plan = buildProvisionPlan(request.primary, credentials, revalidatedPlatform);
+    revalidatedInstallation = await revalidateInstallation(deps.caller, request);
+    plan = buildProvisionPlan(revalidatedInstallation.primary, credentials, revalidatedInstallation.platform);
   } catch (error) {
     await discardOperation(deps.caller, operation);
     throw error;
@@ -417,7 +474,12 @@ export async function createPostgresConnection(
         await transitionOperation(deps.caller, operation.operationId, 'provision-running', {
           phase: 'cleanup-required', cleanupReason: 'provision-failed',
         });
-        await cleanUpRacedProvision(deps, request, revalidatedPlatform, credentials, {
+        await cleanUpRacedProvision(deps, {
+          ...request,
+          resource: revalidatedInstallation.resource,
+          platform: revalidatedInstallation.platform,
+          primary: revalidatedInstallation.primary,
+        }, revalidatedInstallation.platform, credentials, {
           ...operation, phase: 'cleanup-required', cleanupReason: 'provision-failed',
         });
       } catch (cleanupError) {
@@ -436,7 +498,12 @@ export async function createPostgresConnection(
     await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
       phase: 'cleanup-required', cleanupReason: 'duplicate-race',
     });
-    await cleanUpRacedProvision(deps, request, revalidatedPlatform, credentials, operation);
+    await cleanUpRacedProvision(deps, {
+      ...request,
+      resource: revalidatedInstallation.resource,
+      platform: revalidatedInstallation.platform,
+      primary: revalidatedInstallation.primary,
+    }, revalidatedInstallation.platform, credentials, operation);
     return raced;
   }
   let created: RPC.CreateConnection;
@@ -466,7 +533,12 @@ export async function createPostgresConnection(
     await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
       phase: 'cleanup-required', cleanupReason: 'persistence-failed',
     });
-    await cleanUpRacedProvision(deps, request, revalidatedPlatform, credentials, {
+    await cleanUpRacedProvision(deps, {
+      ...request,
+      resource: revalidatedInstallation.resource,
+      platform: revalidatedInstallation.platform,
+      primary: revalidatedInstallation.primary,
+    }, revalidatedInstallation.platform, credentials, {
       ...operation, phase: 'cleanup-required', cleanupReason: 'persistence-failed',
     });
     throw new Error(PERSIST_ERROR);

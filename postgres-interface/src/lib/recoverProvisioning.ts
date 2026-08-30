@@ -233,13 +233,9 @@ async function cleanupRun(
   try {
     status = await monitoredStatus(deps, cleanupRunId);
   } catch (error) {
-    try {
-      await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', {
-        phase: 'cleanup-required', cleanupRunId: null,
-      });
-    } catch {
-      throw recoveryError();
-    }
+    // A transport/database/monitoring error does not prove that the cleanup
+    // run failed. Keep cleanup-running and its exact run id so a retry can
+    // resume monitoring instead of launching a second cleanup runner.
     throw error;
   }
   if (status === STATUS_FAILED) {

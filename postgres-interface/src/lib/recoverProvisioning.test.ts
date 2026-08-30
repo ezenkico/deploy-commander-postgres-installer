@@ -214,6 +214,23 @@ describe('recoverProvisioning', () => {
     expect(reset?.[1]).toMatchObject({ cleanup_run_id: null });
   });
 
+  it('retains cleanup-running and its run id when monitoring has a transient error', async () => {
+    const cleanup: ConnectionOperation = { ...operation, phase: 'cleanup-running', cleanupRunId: 'cleanup-run' };
+    const d = deps({
+      caller: {
+        ...(deps().caller as unknown as Record<string, unknown>),
+        getRun: vi.fn().mockResolvedValue({ run: { id: 'cleanup-run', status: 1 } }),
+      } as unknown as RPCCaller,
+      waitForRun: vi.fn().mockRejectedValue(new Error('temporary transport failure')),
+    });
+
+    await expect(recoverProvisioning(d, cleanup)).rejects.toThrow('PostgreSQL recovery is required');
+    expect(d.caller.start).not.toHaveBeenCalled();
+    const resets = (d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([, bindings]) => (bindings as Record<string, unknown>).next_phase === 'cleanup-required');
+    expect(resets).toHaveLength(0);
+  });
+
   it('provides a startup adapter that reads and recovers the journal before new work', async () => {
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>),
