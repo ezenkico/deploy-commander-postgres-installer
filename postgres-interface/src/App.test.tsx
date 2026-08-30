@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import type { RPCCaller } from '@ezenki/deploy-commander-installer-interface';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import type { RPCCaller, Wire } from '@ezenki/deploy-commander-installer-interface';
 import App, { type AppClientFactory } from './App';
 import { createRunEventSource } from './lib/runMonitor';
 import { recoverConnectionOnBoot, type AppClient } from './lib/appRecovery';
+
+afterEach(() => cleanup());
 
 const operation = {
   kind: 'connection', operation_id: 'operation-1', caller_id: 'manager-2', resource_id: 'resource-1',
@@ -50,7 +52,7 @@ describe('App boot recovery call site', () => {
 });
 
 function appClient(overrides: Partial<RPCCaller> = {}, metadata: unknown = {}) {
-  const wire = { close: vi.fn(), end: vi.fn() } as never;
+  const wire = { close: vi.fn(), end: vi.fn() } as unknown as Wire;
   const caller = {
     getManager: vi.fn().mockResolvedValue({ id: 'postgres-manager', kind: 'manager', name: 'Postgres' }),
     getMetadata: vi.fn().mockResolvedValue(metadata),

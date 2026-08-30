@@ -19,7 +19,7 @@ export interface AppProps {
 }
 
 type BootView =
-  | { kind: 'dashboard'; resource: RPC.ResourceItem | null; primary: PrimaryState | null; ambiguous: boolean }
+  | { kind: 'dashboard'; resource: RPC.ResourceItem | null; primary: PrimaryState | null; ambiguous: boolean; error: string | null }
   | { kind: 'connection'; resource: RPC.ResourceItem | null; primary: ReadyPrimaryState | null; callerId: string | null; error: string | null; result: RPC.CreateConnection | null }
   | { kind: 'error'; message: string };
 
@@ -110,7 +110,7 @@ export default function App({ createClient = productionClient }: AppProps) {
             error: resourceCount > 1 ? 'PostgreSQL recovery is required' : problem ?? (recovery?.kind === 'busy' ? 'A PostgreSQL operation is already in progress' : null),
             result: recovery?.kind === 'connection' ? recovery.value : null,
           };
-        } catch (error: unknown) {
+        } catch {
           return {
             currentManager, mode: 'connection' as const, resource: null, primary: null,
             callerId: callingManager,
@@ -125,7 +125,14 @@ export default function App({ createClient = productionClient }: AppProps) {
       const resource = await findPrimaryResource(client.caller);
       const primary = await readPrimaryState(client.caller);
       const resourceCount = await countPrimaryResources(client.caller);
-      return { currentManager, mode: 'dashboard' as const, resource, primary, ambiguous: resourceCount > 1 || stateError(resource, primary) !== null };
+      return {
+        currentManager,
+        mode: 'dashboard' as const,
+        resource,
+        primary,
+        ambiguous: resourceCount > 1,
+        error: resourceCount > 1 ? null : stateError(resource, primary),
+      };
     };
 
     void boot().then((next) => {
@@ -134,7 +141,7 @@ export default function App({ createClient = productionClient }: AppProps) {
       if (next.mode === 'connection') {
         setView({ kind: 'connection', resource: next.resource, primary: next.primary, callerId: next.callerId, error: next.error, result: next.result });
       } else {
-        setView({ kind: 'dashboard', resource: next.resource, primary: next.primary, ambiguous: next.ambiguous });
+        setView({ kind: 'dashboard', resource: next.resource, primary: next.primary, ambiguous: next.ambiguous, error: next.error });
       }
     }).catch((error: unknown) => {
       if (active) setView({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to load PostgreSQL manager state' });
@@ -156,6 +163,7 @@ export default function App({ createClient = productionClient }: AppProps) {
     return <ConnectionRequest caller={clientRef.current?.caller} events={clientRef.current?.events} wire={clientRef.current?.wire} currentManagerId={manager ?? ''} callingManagerId={view.callerId} resource={view.resource} primary={view.primary} initialError={view.error} initialResult={view.result} />;
   }
   if (view.ambiguous) return <div role="alert">PostgreSQL resource state is ambiguous; teardown and reinstall are required.</div>;
+  if (view.error) return <div role="alert">{view.error}</div>;
   const installed = view.resource !== null && isReadyPrimary(view.primary, view.resource);
   const legacy = view.resource !== null && view.primary === null;
   return <main className="p-6 text-xl font-semibold" data-installed={installed ? 'true' : 'false'}>
