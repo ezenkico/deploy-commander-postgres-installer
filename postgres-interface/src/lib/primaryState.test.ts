@@ -156,7 +156,7 @@ describe('primary state', () => {
     const resourcesCaller = {
       getMyResources: vi.fn()
         .mockResolvedValueOnce({
-          items: [{ ...resource, id: 'resource-other', name: 'other' }],
+          items: Array.from({ length: 50 }, (_, index) => ({ ...resource, id: `resource-other-${index}`, name: 'other' })),
           limit: 50,
           offset: 0,
           total: 51,
@@ -205,8 +205,10 @@ describe('primary state', () => {
     { items: [pageResource, { ...pageResource, id: 'resource-2' }], limit: 50, offset: 0, total: 1 },
     { items: [], limit: 50, offset: 1, total: 0 },
     { items: [], limit: 50, offset: 0, total: 1 },
+    { items: [pageResource], limit: 50, offset: 0, total: 100 },
   ])('rejects inconsistent resource page metadata %#', async (page) => {
     const caller = { getMyResources: vi.fn().mockResolvedValue(page) } as unknown as RPCCaller;
     await expect(findPrimaryResource(caller)).rejects.toThrow('Invalid PostgreSQL resource response');
+    expect(caller.getMyResources).toHaveBeenCalledTimes(1);
   });
 });

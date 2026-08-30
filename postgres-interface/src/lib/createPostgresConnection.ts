@@ -150,7 +150,8 @@ function validatePage(value: unknown, expectedOffset: number): { items: RPC.Conn
     || value.items.length > value.limit
     || value.items.length > total
     || offset > total
-    || offset + value.items.length > total) {
+    || offset + value.items.length > total
+    || value.items.length < value.limit && offset + value.items.length < total) {
     throw invalidConnection();
   }
   return {

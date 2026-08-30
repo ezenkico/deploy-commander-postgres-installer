@@ -272,7 +272,8 @@ function validateResourcePage(value: unknown, expectedOffset: number): { items: 
     || value.items.length > limit
     || value.items.length > total
     || offset > total
-    || offset + value.items.length > total) {
+    || offset + value.items.length > total
+    || value.items.length < limit && offset + value.items.length < total) {
     throw new Error('Invalid PostgreSQL resource response');
   }
   return {

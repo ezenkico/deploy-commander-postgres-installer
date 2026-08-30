@@ -265,8 +265,10 @@ describe('findExistingConnection', () => {
     { items: [{ id: 'c1' }, { id: 'c2' }], limit: 50, offset: 0, total: 1 },
     { items: [], limit: 50, offset: 1, total: 0 },
     { items: [], limit: 50, offset: 0, total: 1 },
+    { items: [{ id: 'c1', manager: 'manager-2', resource: 'resource-1', external: false, created_at: 'now', updated_at: 'now' }], limit: 50, offset: 0, total: 100 },
   ])('rejects inconsistent connection page metadata %#', async (page) => {
     const caller = { getConnections: vi.fn().mockResolvedValue(page) } as unknown as RPCCaller;
     await expect(findExistingConnection(caller, 'manager-2', 'resource-1')).rejects.toThrow('connection');
+    expect(caller.getConnections).toHaveBeenCalledTimes(1);
   });
 });
