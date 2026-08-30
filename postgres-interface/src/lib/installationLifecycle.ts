@@ -188,8 +188,12 @@ export async function teardownPostgres(
   } catch (error) {
     const match = await findCorrelatedRun(deps.caller, 'teardown', note).catch(() => ({ kind: 'ambiguous' as const }));
     if (match.kind === 'absent') {
-      await transitionOperation(deps.caller, operation.operationId, 'teardown-starting', 'teardown-release-required').catch(() => undefined);
-      await deleteOperation(deps.caller, operation.operationId).catch(() => undefined);
+      try {
+        await transitionOperation(deps.caller, operation.operationId, 'teardown-starting', 'teardown-release-required');
+        await deleteOperation(deps.caller, operation.operationId);
+      } catch {
+        throw new Error('PostgreSQL lifecycle recovery is required');
+      }
     }
     throw error;
   }
@@ -208,18 +212,32 @@ export async function teardownPostgres(
         phase: 'teardown-failed', runId: null, resourceId: state.resourceId, initializedAt: state.initializedAt,
       });
       await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
-      await deleteOperation(deps.caller, operation.operationId);
+      await releaseOperation(deps.caller, operation.operationId);
     }
     throw new Error(TEARDOWN_ERROR);
   }
 
   if (state) await deletePrimaryState(deps.caller, state.operationId);
-  if (deps.storage && deps.managerId) clearPermission(deps.storage, deps.managerId, expectedResource.id);
+  if (deps.storage && deps.managerId && !clearPermission(deps.storage, deps.managerId, expectedResource.id)) {
+    throw new Error('PostgreSQL lifecycle recovery is required');
+  }
   await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
-  await deleteOperation(deps.caller, operation.operationId);
+  await releaseOperation(deps.caller, operation.operationId);
 }
 
 export type LifecycleRecoveryResult = { kind: 'busy' | 'retry' };
+
+function lifecycleRecoveryError(): Error {
+  return new Error('PostgreSQL lifecycle recovery is required');
+}
+
+async function releaseOperation(caller: RPCCaller, operationId: string): Promise<void> {
+  try {
+    await deleteOperation(caller, operationId);
+  } catch {
+    throw lifecycleRecoveryError();
+  }
+}
 
 async function exactStatus(caller: RPCCaller, runId: string): Promise<number> {
   let result: unknown;
@@ -279,8 +297,12 @@ export async function recoverTeardownOnBoot(
     const match = await findCorrelatedRun(deps.caller, 'teardown', `postgres-teardown:${operation.operationId}`);
     if (match.kind === 'ambiguous') return { kind: 'busy' };
     if (match.kind === 'absent') {
-      await transitionOperation(deps.caller, operation.operationId, 'teardown-starting', 'teardown-release-required').catch(() => undefined);
-      await deleteOperation(deps.caller, operation.operationId).catch(() => undefined);
+      try {
+        await transitionOperation(deps.caller, operation.operationId, 'teardown-starting', 'teardown-release-required');
+        await deleteOperation(deps.caller, operation.operationId);
+      } catch {
+        throw lifecycleRecoveryError();
+      }
       return { kind: 'retry' };
     }
     runId = match.id;
@@ -292,7 +314,7 @@ export async function recoverTeardownOnBoot(
   if (operation.phase === 'teardown-release-required') {
     // Terminal cleanup has already completed before this phase is written.
     // Only release the journal; never reinterpret the outcome or delete state.
-    await deleteOperation(deps.caller, operation.operationId);
+    await releaseOperation(deps.caller, operation.operationId);
     return { kind: 'retry' };
   }
   if (!runId) return { kind: 'busy' };
@@ -304,9 +326,11 @@ export async function recoverTeardownOnBoot(
     });
   } else {
     if (state) await deletePrimaryState(deps.caller, state.operationId);
-    if (storage && managerId) clearPermission(storage, managerId, state?.resourceId ?? operation.resourceId);
+    if (storage && managerId && !clearPermission(storage, managerId, state?.resourceId ?? operation.resourceId)) {
+      throw lifecycleRecoveryError();
+    }
   }
   await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
-  await deleteOperation(deps.caller, operation.operationId);
+  await releaseOperation(deps.caller, operation.operationId);
   return { kind: 'retry' };
 }

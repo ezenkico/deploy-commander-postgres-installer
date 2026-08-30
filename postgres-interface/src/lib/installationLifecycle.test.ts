@@ -99,6 +99,19 @@ describe('teardownPostgres', () => {
     await expect(teardownPostgres(d, resource)).rejects.toThrow('teardown');
     expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([, b]) => (b as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
   });
+
+  it('retains the teardown journal when scoped permission cleanup fails', async () => {
+    const databaseQuery = vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
+      if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primaryRow] }] };
+      return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
+    });
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      getMyResources: vi.fn().mockResolvedValue({ items: [resource], limit: 50, offset: 0, total: 1 }), databaseQuery,
+    } as unknown as RPCCaller, storage: { removeItem: vi.fn(() => { throw new Error('storage unavailable'); }) } as unknown as Storage });
+    await expect(teardownPostgres(d, resource)).rejects.toThrow('lifecycle recovery is required');
+    expect(databaseQuery.mock.calls.some(([, bindings]) => (bindings as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
+  });
 });
 
 describe('lifecycle boot recovery', () => {
@@ -130,5 +143,46 @@ describe('lifecycle boot recovery', () => {
     } as unknown as RPCCaller });
     await expect(recoverTeardownOnBoot(d)).resolves.toEqual({ kind: 'retry' });
     expect(d.caller.start).not.toHaveBeenCalled();
+  });
+
+  it('does not release a recovered teardown until permission cleanup succeeds', async () => {
+    const databaseQuery = vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
+      if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-running', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }] }] };
+      if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primaryRow] }] };
+      return { results: [{ statement: 0, result: [bindings.operation_id ?? 'tear-1'] }] };
+    });
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>), databaseQuery,
+      getRun: vi.fn().mockResolvedValue({ run: { id: 'tear-run', status: 2 } }),
+    } as unknown as RPCCaller, storage: { removeItem: vi.fn(() => { throw new Error('storage unavailable'); }) } as unknown as Storage });
+    await expect(recoverTeardownOnBoot(d)).rejects.toThrow('lifecycle recovery is required');
+    expect(databaseQuery.mock.calls.some(([, bindings]) => (bindings as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
+  });
+
+  it('normalizes a release-required journal deletion failure', async () => {
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      databaseQuery: vi.fn().mockImplementation((query: string) => {
+        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-release-required', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }] }] };
+        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
+        if (query.startsWith('DELETE postgres_operation')) throw new Error('private database detail');
+        return { results: [{ statement: 0, result: ['tear-1'] }] };
+      }),
+    } as unknown as RPCCaller });
+    await expect(recoverTeardownOnBoot(d)).rejects.toThrow('PostgreSQL lifecycle recovery is required');
+    await expect(recoverTeardownOnBoot(d)).rejects.not.toThrow('private database detail');
+  });
+
+  it('reports recovery when an absent starting operation cannot be released', async () => {
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      getRuns: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
+      databaseQuery: vi.fn().mockImplementation((query: string) => {
+        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-starting', teardown_run_id: null, created_at: 'now', updated_at: 'now' }] }] };
+        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
+        throw new Error('private mutation detail');
+      }),
+    } as unknown as RPCCaller });
+    await expect(recoverTeardownOnBoot(d)).rejects.toThrow('PostgreSQL lifecycle recovery is required');
   });
 });

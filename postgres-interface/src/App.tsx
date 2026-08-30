@@ -53,6 +53,7 @@ function stateError(resource: RPC.ResourceItem | null, primary: PrimaryState | n
   if (resource === null && primary === null) return null;
   if (resource !== null && primary === null) return null; // legacy install: teardown/reinstall
   if (resource !== null && isReadyPrimary(primary, resource)) return null;
+  if (resource !== null && primary?.phase === 'teardown-failed' && primary.resourceId === resource.id) return null;
   return 'PostgreSQL recovery is required';
 }
 

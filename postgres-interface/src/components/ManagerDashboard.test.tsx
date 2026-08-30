@@ -70,6 +70,14 @@ describe('ManagerDashboard', () => {
     expect(screen.queryByRole('button', { name: 'Install PostgreSQL' })).not.toBeInTheDocument();
   });
 
+  it('offers an actual teardown retry after a failed teardown', () => {
+    const onTeardown = vi.fn();
+    renderDashboard({ resource, primary: { ...primary, phase: 'teardown-failed' }, onTeardown });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry teardown' }));
+    expect(onTeardown).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: 'Retry recovery' })).not.toBeInTheDocument();
+  });
+
   it('supports resetting only the current remembered permission', () => {
     const onResetPermission = vi.fn();
     renderDashboard({ resource, primary, permissionRemembered: true, onResetPermission });

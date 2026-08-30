@@ -41,6 +41,7 @@ export default function ManagerDashboard({
 }: ManagerDashboardProps) {
   const ready = isReady(resource, primary);
   const legacy = resource !== null && primary === null;
+  const teardownFailed = resource !== null && primary?.phase === 'teardown-failed' && primary.resourceId === resource.id;
   const recovery = Boolean(error) || resourceAmbiguous || (!ready && !legacy && (resource !== null || primary !== null));
 
   let content;
@@ -59,6 +60,15 @@ export default function ManagerDashboard({
         <h2 className="mt-1 text-2xl font-semibold text-slate-900">PostgreSQL installation needs recovery</h2>
         <p className="mt-3 text-sm text-amber-800">{error ?? 'The installation state is incomplete. A PostgreSQL operation is still in progress.'}</p>
         <button type="button" disabled={busy} onClick={onRetry} className={`${buttonClass('secondary')} mt-6`}>Retry recovery</button>
+      </section>
+    );
+  } else if (teardownFailed) {
+    content = (
+      <section className="rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
+        <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Teardown failed</p>
+        <h2 className="mt-1 text-2xl font-semibold text-slate-900">PostgreSQL teardown needs retrying</h2>
+        <p className="mt-3 text-sm text-rose-800">The previous teardown run failed. Retry teardown to remove this installation safely.</p>
+        <button type="button" disabled={busy} onClick={onTeardown} className={`${buttonClass('danger')} mt-6`}>Retry teardown</button>
       </section>
     );
   } else if (ready) {
