@@ -122,15 +122,18 @@ export function waitForRun(
       if (options.signal) options.signal.removeEventListener('abort', onAbort);
     };
 
-    const finish = (result?: RPC.GetRun, error?: unknown) => {
+    const succeed = (result: RPC.GetRun) => {
       if (settled) return;
       settled = true;
       cleanup();
-      if (error !== undefined) {
-        reject(error);
-      } else {
-        resolve(result as RPC.GetRun);
-      }
+      resolve(result);
+    };
+
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
     };
 
     const inspectResult = (result: RPC.GetRun) => {
@@ -138,12 +141,12 @@ export function waitForRun(
       try {
         const status = readRunStatus(result, runId);
         if (status === STATUS_DONE) {
-          finish(result);
+          succeed(result);
         } else if (status === STATUS_FAILED) {
-          finish(undefined, new RunFailedError(runId, STATUS_FAILED));
+          fail(new RunFailedError(runId, STATUS_FAILED));
         }
       } catch (error) {
-        finish(undefined, error);
+        fail(error);
       }
     };
 
@@ -155,7 +158,7 @@ export function waitForRun(
         inspectResult(result);
       }).catch((error: unknown) => {
         polling = false;
-        finish(undefined, error);
+        fail(error);
       });
     };
 
@@ -165,21 +168,21 @@ export function waitForRun(
       if (id !== runId || status === undefined) return;
       if (status === STATUS_QUEUED || status === STATUS_RUNNING) return;
       if (status === STATUS_FAILED) {
-        finish(undefined, new RunFailedError(runId, STATUS_FAILED));
+        fail(new RunFailedError(runId, STATUS_FAILED));
       } else if (status === STATUS_DONE) {
         poll();
       } else {
-        finish(undefined, unknownRunStatus());
+        fail(unknownRunStatus());
       }
     };
 
     function onAbort() {
-      finish(undefined, abortError());
+      fail(abortError());
     }
 
     const pollTimer = setInterval(poll, normalized.pollIntervalMs);
     const timeoutTimer = setTimeout(() => {
-      finish(undefined, new Error('Timed out waiting for run'));
+      fail(new Error('Timed out waiting for run'));
     }, normalized.timeoutMs);
     const unsubscribe = source.subscribe(onEvent);
     if (options.signal) {

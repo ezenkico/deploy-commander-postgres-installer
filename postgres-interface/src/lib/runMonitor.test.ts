@@ -159,6 +159,23 @@ describe('run monitor', () => {
     expect(getRun).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects when getRun rejects with undefined', async () => {
+    vi.useFakeTimers();
+    try {
+      const source = createRunEventSource();
+      const getRun = vi.fn().mockRejectedValue(undefined);
+      const promise = waitForRun(callerWithGetRun(getRun), source, 'run-1', {
+        pollIntervalMs: 100,
+        timeoutMs: 500,
+      });
+      const assertion = expect(promise).rejects.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(100);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects unknown statuses from events and polling', async () => {
     const source = createRunEventSource();
       const eventPromise = waitForRun(callerWithGetRun(vi.fn()), source, 'run-1', { timeoutMs: 500 });
