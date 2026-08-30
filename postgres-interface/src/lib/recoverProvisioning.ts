@@ -198,7 +198,9 @@ async function cleanupRun(
       if (match.kind === 'ambiguous') return { kind: 'busy' };
       if (match.kind === 'absent') {
         try {
-          await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', 'cleanup-required');
+          await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', {
+            phase: 'cleanup-required', cleanupRunId: null,
+          });
         } catch { throw recoveryError(); }
         return { kind: 'busy' };
       }
@@ -211,7 +213,9 @@ async function cleanupRun(
       else if (match.kind === 'ambiguous') return { kind: 'busy' };
       else {
         try {
-          await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', 'cleanup-required');
+          await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', {
+            phase: 'cleanup-required', cleanupRunId: null,
+          });
         } catch { throw recoveryError(); }
         return { kind: 'busy' };
       }
@@ -225,10 +229,24 @@ async function cleanupRun(
     }
   }
 
-  const status = await monitoredStatus(deps, cleanupRunId);
+  let status: number;
+  try {
+    status = await monitoredStatus(deps, cleanupRunId);
+  } catch (error) {
+    try {
+      await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', {
+        phase: 'cleanup-required', cleanupRunId: null,
+      });
+    } catch {
+      throw recoveryError();
+    }
+    throw error;
+  }
   if (status === STATUS_FAILED) {
     try {
-      await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', 'cleanup-required');
+      await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', {
+        phase: 'cleanup-required', cleanupRunId: null,
+      });
     } catch { throw recoveryError(); }
     return { kind: 'busy' };
   }
@@ -341,7 +359,9 @@ export async function recoverProvisioning(
       if (match.kind === 'absent') {
         try {
           await transitionOperation(
-            deps.caller, operation.operationId, operation.phase, 'cleanup-required',
+            deps.caller, operation.operationId, operation.phase, {
+              phase: 'cleanup-required', cleanupRunId: null,
+            },
           );
         }
         catch { throw recoveryError(); }

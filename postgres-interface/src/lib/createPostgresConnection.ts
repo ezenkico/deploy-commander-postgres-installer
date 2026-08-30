@@ -296,10 +296,9 @@ async function cleanUpRacedProvision(
     await deps.waitForRun(deps.caller, deps.events, cleanupRunId, { signal: deps.signal });
   } catch (error) {
     if (isAbort(error)) throw error;
-    if (isRecord(error) && error.status === 3) {
-      await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', 'cleanup-required')
-        .catch(() => undefined);
-    }
+    await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', {
+      phase: 'cleanup-required', cleanupRunId: null,
+    }).catch(() => undefined);
     throw new Error(CLEANUP_ERROR);
   }
   try {
@@ -433,7 +432,7 @@ export async function createPostgresConnection(
   await transitionOperation(deps.caller, operation.operationId, 'provisioned', 'persisting');
   await transitionOperation(deps.caller, operation.operationId, 'persisting', 'reconciliation-required');
   const raced = await findExistingConnection(deps.caller, request.callingManagerId, request.resource.id);
-  if (raced && connectionBelongsToOperation(raced, operation)) {
+  if (raced) {
     await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
       phase: 'cleanup-required', cleanupReason: 'duplicate-race',
     });

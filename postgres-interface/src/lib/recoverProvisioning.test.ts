@@ -209,6 +209,9 @@ describe('recoverProvisioning', () => {
     } as unknown as RPCCaller, waitForRun: vi.fn().mockRejectedValue(Object.assign(new Error('failed'), { status: 3 })) });
     await expect(recoverProvisioning(d, cleanup)).resolves.toEqual({ kind: 'busy' });
     expect(d.caller.start).not.toHaveBeenCalled();
+    const reset = (d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .find(([, bindings]) => (bindings as Record<string, unknown>).next_phase === 'cleanup-required');
+    expect(reset?.[1]).toMatchObject({ cleanup_run_id: null });
   });
 
   it('provides a startup adapter that reads and recovers the journal before new work', async () => {

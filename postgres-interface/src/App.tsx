@@ -3,16 +3,22 @@ import './App.css'
 import { createWire, type Events, RPC, type RPCResponse, type WireSend } from "@ezenki/deploy-commander-installer-interface";
 import Install from './components/Install';
 import Teardown from './components/Teardown';
+import { createRunEventSource } from './lib/runMonitor';
+import { recoverConnectionOnBoot, type AppClient } from './lib/appRecovery';
 
 function setupWire(
   sendAction: (wire: WireSend) => Promise<RPCResponse>,
   eventAction: (event: Events.InterfaceEvent) => void
 ){
+  const events = createRunEventSource();
   const wire = createWire(
     sendAction,
-    eventAction
+    (event) => {
+      events.publish(event);
+      eventAction(event);
+    }
   );
-  return RPC.SetupRPCCaller(wire);
+  return { wire, caller: RPC.SetupRPCCaller(wire), events };
 }
 
 function checkRuns(runs: RPC.GetRuns){
@@ -30,11 +36,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const currentRun = useRef<string | null>(null);
-  const checkRun = useCallback(async () => {
-      const run = await caller.current.getRuns(undefined, undefined, undefined, undefined, 1);
-      setFirst(checkRuns(run));
-    }, [])
-  const caller = useRef(setupWire(async(wire: WireSend) => {
+  const client = useRef<AppClient>(setupWire(async(wire: WireSend) => {
+    void wire;
     return {
       ok: true,
       result: null
@@ -59,9 +62,19 @@ export default function App() {
     currentRun.current = runID;
     setRunning(true);
   }));
+  const caller = client.current.caller;
+  const checkRun = useCallback(async () => {
+      const run = await caller.getRuns(undefined, undefined, undefined, undefined, 1);
+      setFirst(checkRuns(run));
+    }, [])
 
   useEffect(() => {
-    checkRun().finally(() => {
+    recoverConnectionOnBoot(client.current).then((result) => {
+      if (result?.kind === 'busy') setRunning(true);
+      return checkRun();
+    }).catch(() => {
+      setRunning(true);
+    }).finally(() => {
       setLoading(false);
     });
   }, [])
@@ -77,9 +90,9 @@ export default function App() {
   return (
     <div className="p-6 text-xl font-semibold">
       {first ? (
-        <Install wire={caller.current}/> 
+        <Install wire={caller}/>
       ) : (
-        <Teardown wire={caller.current}/>
+        <Teardown wire={caller}/>
       )}
     </div>
   )

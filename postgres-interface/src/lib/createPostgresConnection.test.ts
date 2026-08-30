@@ -193,7 +193,7 @@ describe('createPostgresConnection successful orchestration', () => {
       .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
       .mockResolvedValueOnce({ items: [existing], limit: 50, offset: 0, total: 1 });
     const full = { connection: existing, config: { id: existing.id, manager: existing.manager, resource: existing.resource,
-      metadata: { database: logical.database, username: logical.username } } };
+      metadata: { database: 'db_other', username: 'pg_user_other' } } };
     const start = vi.fn()
       .mockResolvedValueOnce({ id: 'provision-run', queued_at: 'now', status: 0 })
       .mockResolvedValueOnce({ id: 'cleanup-run', queued_at: 'now', status: 0 });
@@ -221,6 +221,21 @@ describe('createPostgresConnection successful orchestration', () => {
     expect(d.caller.start).toHaveBeenCalledTimes(2);
     expect(d.caller.start).toHaveBeenNthCalledWith(2, 'cleanup-connection', 'ezenki/deploy-commander-runner:latest', expect.anything(), expect.stringMatching(/^postgres-cleanup:/));
     expect(d.caller.createConnection).not.toHaveBeenCalled();
+  });
+
+  it('clears the cleanup run id when live cleanup reports failure', async () => {
+    const d = deps({ waitForRun: vi.fn()
+      .mockResolvedValueOnce({ run: { id: 'run-1', status: 2 }, config: {} })
+      .mockRejectedValueOnce(Object.assign(new Error('cleanup failed'), { status: 3 })),
+      caller: {
+        ...(deps().caller as unknown as Record<string, unknown>),
+        createConnection: vi.fn().mockRejectedValueOnce(new Error('save failed')),
+      } as unknown as RPCCaller });
+    await expect(createPostgresConnection(d, request())).rejects.toThrow('clean up');
+    const cleanupReset = (d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .find(([, bindings]) => (bindings as Record<string, unknown>).next_phase === 'cleanup-required'
+        && Object.prototype.hasOwnProperty.call(bindings, 'cleanup_run_id'));
+    expect(cleanupReset?.[1]).toMatchObject({ cleanup_run_id: null });
   });
 
   it('reconciles a rejected connection save and cleans up confirmed absence', async () => {

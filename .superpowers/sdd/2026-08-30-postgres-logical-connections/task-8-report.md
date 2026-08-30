@@ -35,3 +35,12 @@ The recovery API requires the ready primary state and validated platform connect
 - Added `recoverJournalOperation` as the startup call-site adapter that reads the journal before new connection work.
 
 Review-fix verification: full suite — PASS (127 tests); focused changed-file ESLint — PASS; TypeScript reports only the pre-existing `App.tsx` unused `wire` diagnostic.
+
+## Final review fixes
+
+- Wired boot recovery into `App` through `recoverConnectionOnBoot`/`recoverJournalOperation`; active journals block dashboard work and cleanup journals resume before rendering controls.
+- Cleanup status 3 and wait failures now clear `cleanupRunId` when returning to `cleanup-required`, allowing safe correlation or retry.
+- Live duplicate-race second checks treat any valid caller/resource connection as the winner and compensate this operation; logical identifier matching remains enforced for stale-journal recovery only.
+- Added App boot, cleanup retry, and duplicate-race regressions.
+
+Final verification: `npm test` — PASS (13 files, 130 tests); `npm run lint` — PASS with two existing React hook dependency warnings; `npm run build` — PASS.
