@@ -35,7 +35,7 @@ export default function Install({ caller, wire, events, onComplete, onError }: I
     }
   };
   return <div>
-    <button type="button" disabled={!client || busy} onClick={() => { void run(); }}>
+    <button type="button" aria-label="Install Postgres" disabled={!client || busy} onClick={() => { void run(); }}>
       {busy ? 'Installing PostgreSQL…' : 'Install PostgreSQL'}
     </button>
     {error && <p role="alert">{error}</p>}
