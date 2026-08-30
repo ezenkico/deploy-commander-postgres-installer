@@ -3,6 +3,7 @@ import { findExistingConnection, type ConnectionWorkflowDeps, type ReadyPrimaryS
 import { buildCleanupPlan } from './postgresPlans';
 import {
   deleteOperation,
+  readOperation,
   transitionOperation,
   type ConnectionOperation,
 } from './provisioningJournal';
@@ -25,6 +26,22 @@ export type ProvisioningRecoveryResult =
   | { kind: 'busy' }
   | { kind: 'connection'; value: RPC.CreateConnection };
 
+/** Call-site adapter for boot/connection mode: recover the persisted journal
+ * before the caller generates credentials or starts a new operation. */
+export async function recoverJournalOperation(
+  deps: ProvisioningRecoveryDeps,
+): Promise<ProvisioningRecoveryResult | null> {
+  let operation;
+  try {
+    operation = await readOperation(deps.caller);
+  } catch {
+    throw recoveryError();
+  }
+  if (operation === null) return null;
+  if (operation.kind !== 'connection') return { kind: 'busy' };
+  return recoverProvisioning(deps, operation);
+}
+
 export class RecoveryRequiredError extends Error {
   constructor() {
     super('PostgreSQL recovery is required');
@@ -41,6 +58,11 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function nonBlank(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function validLogicalIdentifier(value: unknown, prefix: 'db' | 'pg_user'): value is string {
+  const pattern = prefix === 'db' ? /^db_[0-9a-f]{32}$/ : /^pg_user_[0-9a-f]{32}$/;
+  return typeof value === 'string' && pattern.test(value);
 }
 
 function recoveryError(): RecoveryRequiredError {
@@ -111,7 +133,8 @@ async function monitoredStatus(
   let result: unknown;
   try {
     result = await deps.waitForRun(deps.caller, deps.events, runId, { signal: deps.signal });
-  } catch {
+  } catch (error) {
+    if (isRecord(error) && error.status === STATUS_FAILED) return STATUS_FAILED;
     throw recoveryError();
   }
   if (!isRecord(result) || !isRecord(result.run) || result.run.id !== runId
@@ -231,6 +254,8 @@ async function moveProvisionToCleanup(
     } else if (operation.phase === 'provisioned') {
       await transitionOperation(deps.caller, operation.operationId, 'provisioned', 'persisting');
       await transitionOperation(deps.caller, operation.operationId, 'persisting', 'reconciliation-required');
+    } else if (operation.phase === 'persisting') {
+      await transitionOperation(deps.caller, operation.operationId, 'persisting', 'reconciliation-required');
     }
     await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
       phase: 'cleanup-required', cleanupReason: operation.cleanupReason ?? 'provision-failed',
@@ -247,16 +272,21 @@ export async function recoverProvisioning(
 ): Promise<ProvisioningRecoveryResult> {
   if (!operation || operation.kind !== 'connection' || !nonBlank(operation.operationId)
     || !nonBlank(operation.callerId) || !nonBlank(operation.resourceId)
-    || !nonBlank(operation.database) || !nonBlank(operation.username)) throw recoveryError();
+    || !validLogicalIdentifier(operation.database, 'db')
+    || !validLogicalIdentifier(operation.username, 'pg_user')) throw recoveryError();
 
   const existing = await existingConnection(deps, operation);
   if (existing) {
     // A stale lock may not be released on the strength of a connection that
     // belongs to a different logical database/role. Keep the lock for its own
     // recovery instead of deleting another operation's journal.
-    if (!connectionBelongsToOperation(existing, operation)) return { kind: 'busy' };
-    await clearLock(deps, operation);
-    return { kind: 'connection', value: existing };
+    if (connectionBelongsToOperation(existing, operation)) {
+      await clearLock(deps, operation);
+      return { kind: 'connection', value: existing };
+    }
+    if (operation.phase === 'provision-running' || operation.phase === 'provision-starting') {
+      return { kind: 'busy' };
+    }
   }
 
   if (operation.phase === 'prepared') {
@@ -295,23 +325,30 @@ export async function recoverProvisioning(
     if (operation.phase === 'reconciliation-required') {
       try {
         const raced = await findExistingConnection(deps.caller, operation.callerId, operation.resourceId);
-        if (raced) { await clearLock(deps, operation); return { kind: 'connection', value: raced }; }
+        if (raced && connectionBelongsToOperation(raced, operation)) {
+          await clearLock(deps, operation);
+          return { kind: 'connection', value: raced };
+        }
       } catch { throw recoveryError(); }
     }
     return moveProvisionToCleanup(deps, operation);
   }
 
   if (operation.phase === 'cleanup-required' || operation.phase === 'cleanup-starting' || operation.phase === 'cleanup-running') {
-    if (operation.phase === 'cleanup-starting' && !operation.cleanupRunId) {
+    if ((operation.phase === 'cleanup-starting' || operation.phase === 'cleanup-running') && !operation.cleanupRunId) {
       const match = await findCorrelatedRun(deps.caller, 'cleanup-connection', `postgres-cleanup:${operation.operationId}`);
       if (match.kind === 'ambiguous') return { kind: 'busy' };
       if (match.kind === 'absent') {
-        try { await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', 'cleanup-required'); }
+        try {
+          await transitionOperation(
+            deps.caller, operation.operationId, operation.phase, 'cleanup-required',
+          );
+        }
         catch { throw recoveryError(); }
         return { kind: 'busy' };
       }
       try {
-        await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', {
+        await transitionOperation(deps.caller, operation.operationId, operation.phase, {
           phase: 'cleanup-running', cleanupRunId: match.id,
         });
       } catch {

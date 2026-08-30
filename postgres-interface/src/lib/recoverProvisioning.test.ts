@@ -3,7 +3,7 @@ import type { RPCCaller } from '@ezenki/deploy-commander-installer-interface';
 import type { PlatformConnection } from './postgresContracts';
 import type { ConnectionOperation } from './provisioningJournal';
 import type { ReadyPrimaryState } from './createPostgresConnection';
-import { recoverProvisioning, type ProvisioningRecoveryDeps } from './recoverProvisioning';
+import { recoverJournalOperation, recoverProvisioning, type ProvisioningRecoveryDeps } from './recoverProvisioning';
 
 const primary: ReadyPrimaryState = {
   phase: 'ready', operationId: 'primary-1',
@@ -153,5 +153,72 @@ describe('recoverProvisioning', () => {
     await expect(recoverProvisioning(d, operation)).resolves.toEqual({ kind: 'busy' });
     expect(d.caller.databaseQuery).not.toHaveBeenCalled();
     expect(d.caller.start).not.toHaveBeenCalled();
+  });
+
+  it('moves a persisting operation through reconciliation before starting cleanup', async () => {
+    const persisting: ConnectionOperation = { ...operation, phase: 'persisting' };
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      getRun: vi.fn().mockImplementation(async (id: string) => ({ run: { id, status: 2 } })),
+    } as unknown as RPCCaller });
+    await expect(recoverProvisioning(d, persisting)).resolves.toEqual({ kind: 'retry' });
+    const updates = (d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([query]) => String(query).startsWith('UPDATE postgres_operation'))
+      .map(([, bindings]) => (bindings as Record<string, unknown>).next_phase);
+    expect(updates).toContain('reconciliation-required');
+  });
+
+  it('does not clean up when rejected persistence reconciles to the matching connection', async () => {
+    const existing = {
+      id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
+      external: false, created_at: 'now', updated_at: 'now',
+    };
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      getConnections: vi.fn()
+        .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
+        .mockResolvedValueOnce({ items: [existing], limit: 50, offset: 0, total: 1 }),
+      getConnection: vi.fn().mockResolvedValue({
+      connection: existing,
+      config: { id: existing.id, manager: existing.manager, resource: existing.resource,
+        metadata: { database: operation.database, username: operation.username } },
+      }),
+    } as unknown as RPCCaller });
+    const reconciling = { ...operation, phase: 'reconciliation-required' as const };
+    await expect(recoverProvisioning(d, reconciling)).resolves.toEqual({ kind: 'connection', value: expect.anything() });
+    expect(d.caller.start).not.toHaveBeenCalled();
+  });
+
+  it('correlates a cleanup-running operation with a null run id before starting anything', async () => {
+    const cleanup: ConnectionOperation = { ...operation, phase: 'cleanup-running', cleanupRunId: null };
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      getRuns: vi.fn().mockResolvedValue({ items: [{ id: 'cleanup-run', action: 'cleanup-connection', note: 'postgres-cleanup:operation-1', status: 1 }], limit: 50, offset: 0, total: 1 }),
+      getRun: vi.fn().mockImplementation(async (id: string) => ({ run: { id, status: 2 } })),
+    } as unknown as RPCCaller });
+    await expect(recoverProvisioning(d, cleanup)).resolves.toEqual({ kind: 'retry' });
+    expect(d.caller.start).not.toHaveBeenCalled();
+    expect(d.caller.getRuns).toHaveBeenCalled();
+  });
+
+  it('returns to cleanup-required when the resumed cleanup run fails', async () => {
+    const cleanup: ConnectionOperation = { ...operation, phase: 'cleanup-running', cleanupRunId: 'cleanup-run' };
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      getRun: vi.fn().mockResolvedValue({ run: { id: 'cleanup-run', status: 1 } }),
+    } as unknown as RPCCaller, waitForRun: vi.fn().mockRejectedValue(Object.assign(new Error('failed'), { status: 3 })) });
+    await expect(recoverProvisioning(d, cleanup)).resolves.toEqual({ kind: 'busy' });
+    expect(d.caller.start).not.toHaveBeenCalled();
+  });
+
+  it('provides a startup adapter that reads and recovers the journal before new work', async () => {
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      databaseQuery: vi.fn().mockResolvedValue({ results: [{ statement: 0, result: [] }] }),
+    } as unknown as RPCCaller });
+    await expect(recoverJournalOperation(d)).resolves.toBeNull();
+    expect(d.caller.databaseQuery).toHaveBeenCalledWith(
+      expect.stringContaining('SELECT kind, operation_id'), {},
+    );
   });
 });

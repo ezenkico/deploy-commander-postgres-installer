@@ -176,6 +176,12 @@ function validateFullConnection(value: unknown, summary: RPC.ConnectionItem, cal
   return value as unknown as RPC.CreateConnection;
 }
 
+function connectionBelongsToOperation(value: RPC.CreateConnection, operation: ConnectionOperation): boolean {
+  return isRecord(value.config) && isRecord(value.config.metadata)
+    && value.config.metadata.database === operation.database
+    && value.config.metadata.username === operation.username;
+}
+
 /** Find and validate the caller-owned, non-external connection for a resource. */
 export async function findExistingConnection(
   caller: RPCCaller,
@@ -427,7 +433,7 @@ export async function createPostgresConnection(
   await transitionOperation(deps.caller, operation.operationId, 'provisioned', 'persisting');
   await transitionOperation(deps.caller, operation.operationId, 'persisting', 'reconciliation-required');
   const raced = await findExistingConnection(deps.caller, request.callingManagerId, request.resource.id);
-  if (raced) {
+  if (raced && connectionBelongsToOperation(raced, operation)) {
     await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
       phase: 'cleanup-required', cleanupReason: 'duplicate-race',
     });
@@ -451,13 +457,11 @@ export async function createPostgresConnection(
     } catch {
       throw new Error(PERSIST_ERROR);
     }
-    if (reconciled) {
-      await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
-        phase: 'cleanup-required', cleanupReason: 'duplicate-race',
-      });
-      await cleanUpRacedProvision(deps, request, revalidatedPlatform, credentials, {
-        ...operation, phase: 'cleanup-required', cleanupReason: 'duplicate-race',
-      });
+    if (reconciled && connectionBelongsToOperation(reconciled, operation)) {
+      // The persistence call may have committed before reporting an error. A
+      // matching connection is authoritative and the provisioned database is
+      // the one we need to retain; only release the stale journal.
+      await discardOperation(deps.caller, operation);
       return reconciled;
     }
     await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {

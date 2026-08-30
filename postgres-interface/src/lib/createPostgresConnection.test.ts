@@ -192,7 +192,8 @@ describe('createPostgresConnection successful orchestration', () => {
     const getConnections = vi.fn()
       .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
       .mockResolvedValueOnce({ items: [existing], limit: 50, offset: 0, total: 1 });
-    const full = { connection: existing, config: { id: existing.id, manager: existing.manager, resource: existing.resource, metadata: {} } };
+    const full = { connection: existing, config: { id: existing.id, manager: existing.manager, resource: existing.resource,
+      metadata: { database: logical.database, username: logical.username } } };
     const start = vi.fn()
       .mockResolvedValueOnce({ id: 'provision-run', queued_at: 'now', status: 0 })
       .mockResolvedValueOnce({ id: 'cleanup-run', queued_at: 'now', status: 0 });
@@ -228,6 +229,25 @@ describe('createPostgresConnection successful orchestration', () => {
     await expect(createPostgresConnection(d, request())).rejects.toThrow('Unable to save the PostgreSQL connection');
     expect(d.caller.start).toHaveBeenCalledTimes(2);
     expect(d.caller.start).toHaveBeenNthCalledWith(2, 'cleanup-connection', 'ezenki/deploy-commander-runner:latest', expect.anything(), expect.stringMatching(/^postgres-cleanup:/));
+  });
+
+  it('returns a matching connection after rejected persistence without cleanup', async () => {
+    const existing = { id: 'connection-race', manager: 'manager-2', resource: 'resource-1', external: false, created_at: 'now', updated_at: 'now' };
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      getConnections: vi.fn()
+        .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
+        .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
+        .mockResolvedValueOnce({ items: [existing], limit: 50, offset: 0, total: 1 }),
+      getConnection: vi.fn().mockResolvedValue({
+        connection: existing,
+        config: { id: existing.id, manager: existing.manager, resource: existing.resource,
+          metadata: { database: logical.database, username: logical.username } },
+      }),
+      createConnection: vi.fn().mockRejectedValueOnce(new Error('ambiguous save')),
+    } as unknown as RPCCaller });
+    await expect(createPostgresConnection(d, request())).resolves.toMatchObject({ connection: existing });
+    expect(d.caller.start).toHaveBeenCalledTimes(1);
   });
 
   it('does not start after cancellation wins immediately before runner start and retains the starting journal', async () => {

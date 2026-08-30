@@ -24,3 +24,14 @@ Implemented in the Task 8 worktree; pending parent integration.
 ## Concerns
 
 The recovery API requires the ready primary state and validated platform connection in its dependency object so it can build the exact cleanup plan. Parent integration should invoke recovery before generating credentials or offering a new provisioning request.
+
+## Review fixes
+
+- Persisting recovery now records `reconciliation-required` before compensation.
+- Rejected connection persistence returns a matching committed connection without cleanup; mismatched identifiers are treated as absence and cleaned up safely.
+- Cleanup failures from status 3 return the journal to `cleanup-required`.
+- Cleanup-running records without a run ID correlate exact action/note before any start, including ambiguous/absent handling.
+- Reconciliation and stale-journal deletion require matching caller/resource/database/username identity and validated logical identifiers.
+- Added `recoverJournalOperation` as the startup call-site adapter that reads the journal before new connection work.
+
+Review-fix verification: full suite — PASS (127 tests); focused changed-file ESLint — PASS; TypeScript reports only the pre-existing `App.tsx` unused `wire` diagnostic.
