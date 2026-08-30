@@ -212,6 +212,24 @@ describe('createPostgresConnection successful orchestration', () => {
     expect((d.caller.createConnection as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
+  it('compensates a failed provision run before returning a fixed failure', async () => {
+    const d = deps({ waitForRun: vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('runner details'), { status: 3 }))
+      .mockResolvedValueOnce({ run: { id: 'cleanup-run', status: 2 }, config: {} }) });
+    await expect(createPostgresConnection(d, request())).rejects.toThrow('PostgreSQL provisioning failed');
+    expect(d.caller.start).toHaveBeenCalledTimes(2);
+    expect(d.caller.start).toHaveBeenNthCalledWith(2, 'cleanup-connection', 'ezenki/deploy-commander-runner:latest', expect.anything(), expect.stringMatching(/^postgres-cleanup:/));
+    expect(d.caller.createConnection).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a rejected connection save and cleans up confirmed absence', async () => {
+    const d = deps();
+    (d.caller.createConnection as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('save details'));
+    await expect(createPostgresConnection(d, request())).rejects.toThrow('Unable to save the PostgreSQL connection');
+    expect(d.caller.start).toHaveBeenCalledTimes(2);
+    expect(d.caller.start).toHaveBeenNthCalledWith(2, 'cleanup-connection', 'ezenki/deploy-commander-runner:latest', expect.anything(), expect.stringMatching(/^postgres-cleanup:/));
+  });
+
   it('does not start after cancellation wins immediately before runner start and retains the starting journal', async () => {
     const controller = new AbortController();
     const d = deps({ signal: controller.signal });

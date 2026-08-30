@@ -12,6 +12,7 @@ import {
 import { parsePlatformConnection, type PlatformConnection } from './postgresContracts';
 import type { PrimaryState } from './primaryState';
 import type { RunEventSource, WaitOptions } from './runMonitor';
+import { findCorrelatedRun } from './recoverProvisioning';
 
 export type ReadyPrimaryState = PrimaryState & {
   phase: 'ready';
@@ -255,16 +256,44 @@ async function cleanUpRacedProvision(
       `postgres-cleanup:${operation.operationId}`,
     );
   } catch {
+    const match = await findCorrelatedRun(
+      deps.caller, 'cleanup-connection', `postgres-cleanup:${operation.operationId}`,
+    ).catch(() => ({ kind: 'ambiguous' as const }));
+    if (match.kind === 'absent') {
+      await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', 'cleanup-required')
+        .catch(() => undefined);
+    }
+    if (match.kind !== 'found') throw new Error(CLEANUP_ERROR);
+    started = { id: match.id };
+  }
+  if (!isRecord(started) || !isNonBlank(started.id)) {
+    const match = await findCorrelatedRun(
+      deps.caller, 'cleanup-connection', `postgres-cleanup:${operation.operationId}`,
+    ).catch(() => ({ kind: 'ambiguous' as const }));
+    if (match.kind === 'absent') {
+      await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', 'cleanup-required')
+        .catch(() => undefined);
+    }
+    if (match.kind !== 'found') throw new Error(CLEANUP_ERROR);
+    started = { id: match.id };
+  }
+  const cleanupRunId = isRecord(started) && isNonBlank(started.id) ? started.id : null;
+  if (!cleanupRunId) throw new Error(CLEANUP_ERROR);
+  try {
+    await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', {
+      phase: 'cleanup-running', cleanupRunId,
+    });
+  } catch {
     throw new Error(CLEANUP_ERROR);
   }
-  if (!isRecord(started) || !isNonBlank(started.id)) throw new Error(CLEANUP_ERROR);
-  await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', {
-    phase: 'cleanup-running', cleanupRunId: started.id,
-  });
   try {
-    await deps.waitForRun(deps.caller, deps.events, started.id, { signal: deps.signal });
+    await deps.waitForRun(deps.caller, deps.events, cleanupRunId, { signal: deps.signal });
   } catch (error) {
     if (isAbort(error)) throw error;
+    if (isRecord(error) && error.status === 3) {
+      await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', 'cleanup-required')
+        .catch(() => undefined);
+    }
     throw new Error(CLEANUP_ERROR);
   }
   try {
@@ -334,16 +363,63 @@ export async function createPostgresConnection(
       `postgres-provision:${operation.operationId}`,
     );
   } catch {
-    throw new Error(START_ERROR);
+    const match = await findCorrelatedRun(
+      deps.caller, 'create-connection', `postgres-provision:${operation.operationId}`,
+    ).catch(() => ({ kind: 'ambiguous' as const }));
+    if (match.kind === 'absent') await discardOperation(deps.caller, operation);
+    if (match.kind !== 'found') throw new Error(START_ERROR);
+    started = { id: match.id };
   }
-  if (!isRecord(started) || !isNonBlank(started.id)) throw new Error(START_ERROR);
-  await transitionOperation(deps.caller, operation.operationId, 'provision-starting', {
-    phase: 'provision-running', provisionRunId: started.id,
-  });
+  if (!isRecord(started) || !isNonBlank(started.id)) {
+    const match = await findCorrelatedRun(
+      deps.caller, 'create-connection', `postgres-provision:${operation.operationId}`,
+    ).catch(() => ({ kind: 'ambiguous' as const }));
+    if (match.kind === 'absent') await discardOperation(deps.caller, operation);
+    if (match.kind !== 'found') throw new Error(START_ERROR);
+    started = { id: match.id };
+  }
+  const provisionRunId = isRecord(started) && isNonBlank(started.id) ? started.id : null;
+  if (!provisionRunId) throw new Error(START_ERROR);
+  let runRecorded = true;
   try {
-    await deps.waitForRun(deps.caller, deps.events, started.id, { signal: deps.signal });
+    await transitionOperation(deps.caller, operation.operationId, 'provision-starting', {
+      phase: 'provision-running', provisionRunId,
+    });
+  } catch {
+    runRecorded = false;
+    // The runner may have been accepted even when saving its id failed. An
+    // exact correlation is the only safe way to recover this window.
+    const match = await findCorrelatedRun(
+      deps.caller, 'create-connection', `postgres-provision:${operation.operationId}`,
+    ).catch(() => ({ kind: 'ambiguous' as const }));
+    if (match.kind !== 'found' || match.id !== provisionRunId) throw new Error(START_ERROR);
+  }
+  if (!runRecorded) {
+    try {
+      await transitionOperation(deps.caller, operation.operationId, 'provision-starting', {
+        phase: 'provision-running', provisionRunId,
+      });
+    } catch {
+      throw new Error(START_ERROR);
+    }
+  }
+  try {
+    await deps.waitForRun(deps.caller, deps.events, provisionRunId, { signal: deps.signal });
   } catch (error) {
     if (isAbort(error)) throw error;
+    if (isRecord(error) && error.status === 3) {
+      try {
+        await transitionOperation(deps.caller, operation.operationId, 'provision-running', {
+          phase: 'cleanup-required', cleanupReason: 'provision-failed',
+        });
+        await cleanUpRacedProvision(deps, request, revalidatedPlatform, credentials, {
+          ...operation, phase: 'cleanup-required', cleanupReason: 'provision-failed',
+        });
+      } catch (cleanupError) {
+        if (isAbort(cleanupError)) throw cleanupError;
+        throw new Error(CLEANUP_ERROR);
+      }
+    }
     throw new Error(RUN_ERROR);
   }
   await transitionOperation(deps.caller, operation.operationId, 'provision-running', 'provisioned');
@@ -367,6 +443,29 @@ export async function createPostgresConnection(
       request.resource.id,
     );
   } catch {
+    // A rejected create can still have committed. Reconcile exactly once before
+    // compensating; a failed lookup is never interpreted as absence.
+    let reconciled: RPC.CreateConnection | null;
+    try {
+      reconciled = await findExistingConnection(deps.caller, request.callingManagerId, request.resource.id);
+    } catch {
+      throw new Error(PERSIST_ERROR);
+    }
+    if (reconciled) {
+      await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
+        phase: 'cleanup-required', cleanupReason: 'duplicate-race',
+      });
+      await cleanUpRacedProvision(deps, request, revalidatedPlatform, credentials, {
+        ...operation, phase: 'cleanup-required', cleanupReason: 'duplicate-race',
+      });
+      return reconciled;
+    }
+    await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
+      phase: 'cleanup-required', cleanupReason: 'persistence-failed',
+    });
+    await cleanUpRacedProvision(deps, request, revalidatedPlatform, credentials, {
+      ...operation, phase: 'cleanup-required', cleanupReason: 'persistence-failed',
+    });
     throw new Error(PERSIST_ERROR);
   }
   try {
