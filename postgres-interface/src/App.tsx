@@ -166,8 +166,9 @@ export default function App({ createClient = productionClient }: AppProps) {
   if (view.error) return <div role="alert">{view.error}</div>;
   const installed = view.resource !== null && isReadyPrimary(view.primary, view.resource);
   const legacy = view.resource !== null && view.primary === null;
+  const appClient = clientRef.current!;
   return <main className="p-6 text-xl font-semibold" data-installed={installed ? 'true' : 'false'}>
     {legacy && <p role="alert">This PostgreSQL installation predates private administrator state. Teardown and reinstall are required.</p>}
-    {installed ? <Teardown wire={clientRef.current!.caller} /> : <Install wire={clientRef.current!.caller} />}
+    {installed ? <Teardown caller={appClient.caller} events={appClient.events} resource={view.resource!} managerId={manager ?? undefined} storage={typeof window !== 'undefined' ? window.localStorage : undefined} /> : <Install caller={appClient.caller} events={appClient.events} />}
   </main>;
 }

@@ -1,45 +1,43 @@
-import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
+import { useState } from 'react';
+import type { RPCCaller } from '@ezenki/deploy-commander-installer-interface';
+import { installPostgres } from '../lib/installationLifecycle';
+import { createRunEventSource, type RunEventSource } from '../lib/runMonitor';
 
-interface InstallProps{
-    wire: RPCCaller
+export interface InstallProps {
+  caller?: RPCCaller;
+  wire?: RPCCaller;
+  events?: RunEventSource;
+  onComplete?: () => void;
+  onError?: (message: string) => void;
 }
 
-export default function Install({wire}: InstallProps){
-    return <button onClick={() => {
-        const user = "test_user";
-        const password = "strongpassword";
-        wire.start(
-          "create", 
-          "ezenki/deploy-commander-runner:latest",
-          {
-            services: {
-              postgres: {
-                image: "postgres:15",
-                environment: {
-                  "POSTGRES_USER": user,
-                  "POSTGRES_PASSWORD": password
-                },
-                resources: [
-                  {
-                    "resource_type": "postgres",
-                    "name": "postgres",
-                    "metadata": {
-                      user,
-                      password
-                    }
-                  }
-                ]
-              }
-            },
-            volumes: [
-              "postgres-data"
-            ]
-          }
-        ).then(() => {
-          console.log("started")
-        })
-        .catch((error) => {
-          console.log(error);
-        });
-      }}>Install Postgres</button>
+export default function Install({ caller, wire, events, onComplete, onError }: InstallProps) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const client = caller ?? wire;
+  const run = async () => {
+    if (!client || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await installPostgres({ caller: client, events: events ?? createRunEventSource(), signal: new AbortController().signal });
+      onComplete?.();
+    } catch (value) {
+      const message = value instanceof Error && value.message.includes('requires recovery')
+        ? 'PostgreSQL installation requires recovery'
+        : value instanceof Error && value.message.includes('already exists')
+          ? 'PostgreSQL installation already exists; teardown is required'
+          : 'Unable to install PostgreSQL';
+      setError(message);
+      onError?.(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div>
+    <button type="button" disabled={!client || busy} onClick={() => { void run(); }}>
+      {busy ? 'Installing PostgreSQL…' : 'Install PostgreSQL'}
+    </button>
+    {error && <p role="alert">{error}</p>}
+  </div>;
 }

@@ -115,7 +115,7 @@ const LEGAL_TRANSITIONS: Readonly<Record<OperationPhase, readonly OperationPhase
   'cleanup-required': ['cleanup-starting'],
   'cleanup-starting': ['cleanup-running', 'cleanup-required'],
   'cleanup-running': ['cleanup-required', 'cleanup-running'],
-  'teardown-starting': ['teardown-running'],
+  'teardown-starting': ['teardown-running', 'teardown-release-required'],
   'teardown-running': ['teardown-release-required'],
   'teardown-release-required': [],
 };
