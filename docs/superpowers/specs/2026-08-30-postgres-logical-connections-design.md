@@ -21,21 +21,21 @@ The installed `@ezenki/deploy-commander-installer-interface` package exposes:
 
 The current runner guide confirms that one-time services use `role: "runner"`, platform resource connections attach a container to the resource's Docker network, and dependency ordering does not establish application readiness.
 
-The actual runner source is a prerequisite for implementation. Before installer code uses the new behavior, source inspection must confirm the service-model JSON field, Docker mapping, platform-connection representation, and run-status success/failure values.
+The updated runner contract confirms the service command, Docker mapping, platform-connection representation, and manager run-status values required by this implementation.
 
 ## Runner Enhancement
 
-Add one generic optional service field:
+The runner now provides this generic optional service field:
 
 ```go
 Command *[]string `json:"command,omitempty"`
 ```
 
-The exact Go type must follow the runner model's existing optional-slice convention after source inspection. Map a present command to Docker `Config.Cmd`. An omitted command preserves the image default. An explicitly present empty command must follow the Docker client and repository's existing optional-field semantics rather than inventing a special case.
+It maps a present, non-empty command to Docker `Config.Cmd`. An omitted or null command preserves the image default. An empty command is invalid. Each item is passed as one argument without shell splitting.
 
 Do not add entrypoint support unless source inspection demonstrates that command mapping cannot satisfy the one-shot PostgreSQL client workflow.
 
-Add model/decoding tests and Docker container-configuration tests. Confirm that runner-role containers still exit, are removed, and make the run fail on nonzero exit.
+The installer consumes this contract but does not modify the runner repository.
 
 ## Primary Installation and Private State
 
@@ -48,21 +48,26 @@ Use the generated values as `POSTGRES_USER` and `POSTGRES_PASSWORD`. Set `POSTGR
 
 The resource metadata describes the resource without secrets. It must not contain administrator credentials.
 
+The current runner receives container environment through persisted, manager-scoped run metadata. The user has explicitly approved retaining administrator and per-connection credentials in that access-controlled run configuration as the transport boundary. Run notes, logs, errors, resource metadata, local storage, and non-secret operation journals still exclude credentials. Administrator credentials additionally live in the private primary-state record, while per-connection credentials additionally live in the final Deploy Commander connection.
+
 Persist all private primary state as one record in the PostgreSQL manager's isolated SurrealDB database:
 
 ```text
 postgres_state:primary
   admin_username
   admin_password
+  phase
+  operation_id
+  run_id
   resource_id
   initialized_at
 ```
 
-Use `databaseQuery` with bindings for every application value. Follow confirmed repository SurrealDB record/schema conventions once the relevant source is available. Do not put administrator credentials in local storage, logs, UI output, runner notes, connection metadata, error details, or resource metadata.
+Use `databaseQuery` with bindings for every application value. Secret-bearing writes return only the non-secret operation ID so compare-and-set ownership can be verified. Do not put administrator credentials in local storage, logs, UI output, runner notes, connection metadata, error details, resource metadata, or provisioning journals.
 
-Because the resource ID is created asynchronously by the installation run, primary-state persistence is a post-run initialization step: await the exact successful installation run, discover the exact owned `postgres` resource, then create or update the single state record. If state persistence fails, present a non-secret recovery error and do not report installation initialization as complete.
+Persist the single record atomically before starting installation with phase `install-prepared`, generated credentials, and a random non-secret operation ID. Pass `postgres-install:<operationId>` as the run note so an accepted run can be rediscovered after a crash between `start` and saving its returned ID. Save the returned run ID immediately with phase `install-running`. On success, discover the exact owned resource and transition to `ready` with its ID and initialization time. On failure, retain credentials and transition to `install-failed`. Teardown uses `teardown-running` and `teardown-failed`. Never offer a fresh install while state is unresolved; startup reconciles nonterminal phases by exact run ID or exact action/note correlation.
 
-Installation state is derived from the exact owned resource (`type === "postgres"`, `name === "postgres"`), not from the latest run action.
+Installation state is derived from the exact owned resource (`type === "postgres"`, `name === "postgres"`) together with the reconciled primary record, not from the latest run action. Multiple exact resources fail closed. A legacy resource with no primary record cannot be provisioned because its administrator credentials cannot be recovered; the dashboard presents a non-secret teardown-and-reinstall requirement.
 
 ## Interface Modes
 
@@ -82,17 +87,17 @@ In connection mode, retrieve the caller with `getCallingManager()` and reject nu
 
 ## Permission Preference
 
-Before presenting a prompt, check for an existing connection for the calling-manager/resource pair. An existing connection is returned immediately and never provisions another database.
+Before presenting a prompt, check for an existing connection for the calling-manager/resource pair. Validate the full connection's owner/resource/external fields before returning it. An existing connection is returned immediately and never provisions another database.
 
 For a new connection, show an accessible modal explaining that the named calling manager requests a logical database and credentials from this PostgreSQL installation. It provides Allow, Cancel, and a “Don't ask me again” checkbox.
 
-Scope the preference to the installation:
+Scope the preference to the installation, intentionally not to an individual caller:
 
 ```text
 deploy-commander:postgres:create-connection:<current-manager-id>:<resource-id>
 ```
 
-Store only the literal value `allow`, and only when Allow is selected while the checkbox is checked. Cancel never stores approval. Storage read/write failures fall back to prompting. The normal dashboard exposes a control that removes this exact key and re-enables prompts.
+Store only the literal value `allow`, and only when Allow is selected while the checkbox is checked. The dialog explains that remembering applies to future database requests from any calling manager for this installation. Cancel never stores approval. A failed storage write does not cancel the current explicit Allow; it only means the next request prompts again. Storage read/remove failures fail safely. The normal dashboard exposes a control that removes this exact key and re-enables prompts.
 
 ## Generated Logical Credentials
 
@@ -115,7 +120,7 @@ Read the single private primary-state record and validate it. Read the exact res
 - `PGHOST=postgres`, `PGPORT=5432`, `PGDATABASE=postgres`, and administrator credentials in environment variables.
 - Generated database, role, and password in separate environment variables.
 
-The fixed script uses no shell tracing and never echoes secrets. It performs bounded `pg_isready -q` retries, then invokes `psql -X --quiet --set=ON_ERROR_STOP=1`. Application values enter `psql` through variables. Dynamic SQL uses PostgreSQL server-side `format('%I', ...)` for identifiers and `format('%L', ...)` for literals, executed through `\gexec`; values are never concatenated into raw SQL in TypeScript or shell.
+The fixed script uses no shell tracing and never echoes secrets. It performs 60 readiness attempts two seconds apart, then invokes `psql -X --quiet --set=ON_ERROR_STOP=1`. Application values enter through environment and psql `\getenv`. Dynamic SQL uses server-side `format('%I', ...)` for identifiers and `format('%L', ...)` for literals with `\gexec`; values are never concatenated into SQL. Raw psql output is redirected because errors can include SQL context; the script emits only fixed non-secret failure messages.
 
 Provisioning conditionally creates or repairs the role, enforces `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION`, conditionally creates the database with that owner, repairs ownership, revokes database privileges from `PUBLIC`, grants access to the role, and revokes `CREATE` on the target database's public schema from `PUBLIC`.
 
@@ -123,7 +128,12 @@ The plan includes only the temporary runner service. It never includes or replac
 
 ## Run Monitoring
 
-Confirm named run-status constants or exact values from source before implementation. Do not infer success from undocumented numeric values.
+The authoritative manager run statuses are:
+
+- `0`: queued.
+- `1`: running.
+- `2`: done successfully.
+- `3`: failed.
 
 Monitor only the run ID returned by `start`:
 
@@ -131,7 +141,7 @@ Monitor only the run ID returned by `start`:
 - Ignore unrelated and ID-less updates.
 - Poll `getRun(expectedRunId)` as the authoritative fallback because an event can be early, absent, or incomplete.
 - Support timeout and abort cleanup.
-- Treat confirmed failure as failure even if some SQL statements may already have completed.
+- Treat status `2` as success and status `3` as failure even if some SQL statements may already have completed.
 
 Installation, provisioning, and cleanup operations use the same run-monitoring boundary but keep separate UI state.
 
@@ -165,18 +175,20 @@ wire.close({
 
 ## Recovery and Compensation
 
-Use a separate non-secret operation journal in the manager database, written through bound parameters. It records the calling manager, resource, generated database/role identifiers, run ID, and phase, but never either administrator or per-connection passwords.
+Use one fixed record `postgres_operation:current` as both an exclusive provisioning lock and non-secret recovery journal. Acquire it atomically with `CREATE`; an existing-record failure means another workflow owns the lock, so concurrent workflows cannot both pass duplicate checks. It records the calling manager, resource, generated database/role identifiers, provisioning run ID, cleanup run ID, and an exact phase, but never either administrator or per-connection passwords.
+
+The manager-wide lock has kind `connection` or `teardown`. Connection phases are `prepared`, `provision-starting`, `provision-running`, `provisioned`, `persisting`, `reconciliation-required`, `cleanup-required`, `cleanup-starting`, and `cleanup-running`; teardown uses `teardown-starting`, `teardown-running`, and `teardown-release-required`. Each transition is compare-and-set by operation ID and expected phase. Starting phases close the crash window around `start`: ambiguous responses are reconciled through exhaustive exact action/note lookup before retry or cleanup. Proven absence deletes an unused provision lock, returns cleanup to cleanup-required, or leaves primary state unchanged while moving the teardown lock to release-required and deleting it. Teardown uses note `postgres-teardown:<operationId>` and moves primary state to teardown-running only after obtaining the exact run ID; only confirmed status `3` moves it to teardown-failed. A terminal teardown records release-required before deletion so boot can retry lock release without starting another run. Queued/running runs resume monitoring and are never cleaned up. A failed connection lookup retains `reconciliation-required`; it is never interpreted as absence. Provisioning revalidates ready primary/resource state after lock acquisition and deletes its unused prepared lock if validation fails.
 
 Failure behavior:
 
 - Cancel: close with a structured cancellation result; do not journal or start a run.
-- Runner start rejection: remove the new journal; do not create a connection.
+- Runner start rejection: remove the new journal only when absence of an accepted run is certain; do not create a connection.
 - Provisioning failure: do not create a connection. Run idempotent cleanup because SQL may have partially succeeded.
 - Connection creation rejection: query once more for the exact connection to reconcile an ambiguous response. If it exists, return it without cleanup. Otherwise run cleanup and await its exact run ID.
-- Cleanup terminates sessions for the generated database, safely drops the database, then safely drops the role.
+- Cleanup terminates sessions for the generated database, safely drops the database, then safely drops the role. It never begins while a provisioning run is queued or running.
 - Successful cleanup deletes the journal and returns the original structured error.
 - Failed cleanup marks the journal `cleanup-required`, returns a fixed non-secret error, and prevents new provisioning until cleanup succeeds.
-- A later invocation first checks for an existing connection. If one exists, it removes stale journal state and returns it. Otherwise it retries required cleanup before generating new credentials.
+- A later invocation first checks for an existing connection. If one exists, it returns it even if stale-journal deletion fails; later recovery may remove that stale state. Otherwise it resumes the exact recorded phase before generating new credentials.
 
 The runner is not assumed to provide transactional rollback.
 
@@ -204,10 +216,10 @@ Coverage includes:
 - Provisioning failure without connection persistence.
 - Connection-persistence failure, reconciliation, cleanup success, cleanup failure, and retry recovery.
 - Correct connection owner/resource/configuration and close result.
-- Administrator and connection secrets absent from logs, resource metadata, journal data, UI errors, and runner notes.
+- Administrator and connection secrets absent from logs, resource metadata, journal data, UI errors, runner notes, and local storage; manager-scoped run configuration is the explicitly approved transport exception.
 - Existing installation and teardown behavior.
 
-Completion requires fresh successful frontend tests, lint, TypeScript/Vite build, representative generated Tailwind CSS verification, runner tests/build, a real PostgreSQL integration smoke test, and final SOL review focused on secrets, SQL quoting, run correlation, recovery ordering, and duplicate races.
+Completion requires fresh successful frontend tests, lint, TypeScript/Vite build, representative generated Tailwind CSS verification, a real PostgreSQL integration smoke test where the environment supports Docker, and final SOL review focused on secrets, SQL quoting, run correlation, recovery ordering, and duplicate races.
 
 ## Scope Boundaries
 
