@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
 import type { RPCCaller } from '@ezenki/deploy-commander-installer-interface';
+import App, { type AppClientFactory } from './App';
 import { createRunEventSource } from './lib/runMonitor';
 import { recoverConnectionOnBoot, type AppClient } from './lib/appRecovery';
 
@@ -44,5 +46,56 @@ describe('App boot recovery call site', () => {
     expect(current.caller.start).toHaveBeenCalledWith(
       'cleanup-connection', 'ezenki/deploy-commander-runner:latest', expect.anything(), 'postgres-cleanup:operation-1',
     );
+  });
+});
+
+function appClient(overrides: Partial<RPCCaller> = {}, metadata: unknown = {}) {
+  const wire = { close: vi.fn(), end: vi.fn() } as never;
+  const caller = {
+    getManager: vi.fn().mockResolvedValue({ id: 'postgres-manager', kind: 'manager', name: 'Postgres' }),
+    getMetadata: vi.fn().mockResolvedValue(metadata),
+    getCallingManager: vi.fn().mockResolvedValue('calling-manager'),
+    getMyResources: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
+    databaseQuery: vi.fn().mockResolvedValue({ results: [{ statement: 0, result: [] }] }),
+    ...overrides,
+  } as unknown as RPCCaller;
+  return { caller, wire, events: createRunEventSource() };
+}
+
+describe('App lifecycle and resource routing', () => {
+  it('uses resource and private state instead of unrelated run events', async () => {
+    const client = appClient();
+    const factory: AppClientFactory = () => client;
+    render(<App createClient={factory} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Install Postgres' })).toBeInTheDocument());
+    client.events.publish({ eventType: 'run-start', event: 'event', data: { id: 'other-run', manager: 'other', action: 'create' } } as never);
+    expect(screen.getByRole('button', { name: 'Install Postgres' })).toBeInTheDocument();
+  });
+
+  it('fails closed when private primary state is unresolved', async () => {
+    const client = appClient({ databaseQuery: vi.fn().mockImplementation(async (query: string) => ({
+      results: [{ statement: 0, result: query.startsWith('SELECT phase') ? [{
+        phase: 'install-running', operation_id: 'op', admin_username: 'admin', admin_password: 'secret',
+        run_id: 'run', resource_id: 'resource', initialized_at: null, updated_at: 'now',
+      }] : [] }],
+    })) });
+    render(<App createClient={() => client} />);
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('recovery is required'));
+  });
+
+  it('fails closed for multiple exact resources even with stale state', async () => {
+    const resources = [{ id: 'r1', type: 'postgres', name: 'postgres', external: false }, { id: 'r2', type: 'postgres', name: 'postgres', external: false }];
+    const client = appClient({ getMyResources: vi.fn().mockResolvedValue({ items: resources, limit: 50, offset: 0, total: 2 }) });
+    render(<App createClient={() => client} />);
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('ambiguous'));
+  });
+
+  it('closes child mode through the wire when boot cannot find an installation', async () => {
+    const client = appClient({}, { action: 'create-connection' });
+    render(<App createClient={() => client} />);
+    await waitFor(() => expect(client.wire.close).toHaveBeenCalledWith({
+      manager: 'postgres-manager', ok: false,
+      error: { status: 503, message: 'PostgreSQL recovery is required' },
+    }));
   });
 });

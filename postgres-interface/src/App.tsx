@@ -48,16 +48,38 @@ function productionClient(onEvent: (event: Events.InterfaceEvent) => void): AppC
   return { ...interfaceClient, events };
 }
 
+function stateError(resource: RPC.ResourceItem | null, primary: PrimaryState | null): string | null {
+  if (resource === null && primary === null) return null;
+  if (resource !== null && primary === null) return null; // legacy install: teardown/reinstall
+  if (resource !== null && isReadyPrimary(primary, resource)) return null;
+  return 'PostgreSQL recovery is required';
+}
+
+/** Count exact resources independently of primary-state contents. */
+async function countPrimaryResources(caller: ReturnType<typeof RPC.SetupRPCCaller>): Promise<number> {
+  let offset = 0;
+  let total = 0;
+  while (true) {
+    const page = await caller.getMyResources('postgres', false, 50, offset);
+    if (!page || !Array.isArray(page.items) || typeof page.limit !== 'number' || typeof page.total !== 'number') {
+      throw new Error('PostgreSQL resource lookup failed');
+    }
+    total += page.items.filter((item) => item.external === false && item.type === 'postgres' && item.name === 'postgres').length;
+    if (page.items.length === 0 || offset + page.items.length >= page.total) return total;
+    if (page.limit <= 0) throw new Error('PostgreSQL resource lookup failed');
+    offset += page.limit;
+  }
+}
+
 /** The root component keeps one wire/caller pair for its complete lifetime. */
 export default function App({ createClient = productionClient }: AppProps) {
   const [loading, setLoading] = useState(true);
   const [manager, setManager] = useState<string | null>(null);
   const [view, setView] = useState<BootView | null>(null);
   const clientRef = useRef<AppClient | null>(null);
-  const mountedRef = useRef(true);
 
   useEffect(() => {
-    mountedRef.current = true;
+    let active = true;
     const controller = new AbortController();
     const client = createClient(() => undefined);
     clientRef.current = client;
@@ -67,58 +89,61 @@ export default function App({ createClient = productionClient }: AppProps) {
       if (!currentManager) throw new Error('Unable to identify the PostgreSQL manager');
       const metadata: unknown = await client.caller.getMetadata();
       const connectionMode = isCreateConnectionMetadata(metadata);
-      const resource = await findPrimaryResource(client.caller);
-      const primary = await readPrimaryState(client.caller);
 
       if (connectionMode) {
-        const calling = await client.caller.getCallingManager().catch(() => null);
-        const callingManager = callerId(calling);
+        const callingManager = callerId(await client.caller.getCallingManager().catch(() => null));
         if (!callingManager) {
-          return { currentManager, mode: 'connection' as const, resource, primary, callerId: null, error: 'A calling manager is required', result: null };
+          return { currentManager, mode: 'connection' as const, resource: null, primary: null, callerId: null, error: 'A calling manager is required', result: null };
         }
 
-        let recoveryResult: Awaited<ReturnType<typeof recoverConnectionOnBoot>> = null;
-        let recoveryError: string | null = null;
         try {
-          recoveryResult = await recoverConnectionOnBoot(client, controller.signal);
+          // Reconcile persisted operations before exposing a connection request.
+          const recovery = await recoverConnectionOnBoot(client, controller.signal);
+          const resource = await findPrimaryResource(client.caller);
+          const primary = await readPrimaryState(client.caller);
+          const resourceCount = await countPrimaryResources(client.caller);
+          const problem = resourceCount > 1 ? 'PostgreSQL resource state is ambiguous; teardown and reinstall are required.' : stateError(resource, primary);
+          return {
+            currentManager, mode: 'connection' as const, resource,
+            primary: isReadyPrimary(primary, resource) ? primary : null,
+            callerId: callingManager,
+            error: resourceCount > 1 ? 'PostgreSQL recovery is required' : problem ?? (recovery?.kind === 'busy' ? 'A PostgreSQL operation is already in progress' : null),
+            result: recovery?.kind === 'connection' ? recovery.value : null,
+          };
         } catch (error: unknown) {
-          recoveryError = error instanceof Error ? error.message : 'PostgreSQL recovery is required';
+          return {
+            currentManager, mode: 'connection' as const, resource: null, primary: null,
+            callerId: callingManager,
+            error: 'PostgreSQL recovery is required', result: null,
+          };
         }
-        return {
-          currentManager,
-          mode: 'connection' as const,
-          resource,
-          primary,
-          callerId: callingManager,
-          error: recoveryError ?? (recoveryResult?.kind === 'busy' ? 'A PostgreSQL operation is already in progress' : null),
-          result: recoveryResult?.kind === 'connection' ? recoveryResult.value : null,
-        };
       }
 
-      // A connection run must never determine installation state. Resource and
-      // private primary state are the only lifecycle signals used here.
-      const ambiguous = resource === null && primary === null
-        ? await hasMultiplePrimaryResources(client.caller)
-        : false;
-      return { currentManager, mode: 'dashboard' as const, resource, primary, ambiguous };
+      // Reconcile the manager-wide journal before rendering normal controls.
+      const recovery = await recoverConnectionOnBoot(client, controller.signal);
+      if (recovery?.kind === 'busy') throw new Error('A PostgreSQL operation is already in progress');
+      const resource = await findPrimaryResource(client.caller);
+      const primary = await readPrimaryState(client.caller);
+      const resourceCount = await countPrimaryResources(client.caller);
+      return { currentManager, mode: 'dashboard' as const, resource, primary, ambiguous: resourceCount > 1 || stateError(resource, primary) !== null };
     };
 
     void boot().then((next) => {
-      if (!mountedRef.current) return;
+      if (!active) return;
       setManager(next.currentManager);
       if (next.mode === 'connection') {
-        setView({ kind: 'connection', resource: next.resource, primary: isReadyPrimary(next.primary, next.resource) ? next.primary : null, callerId: next.callerId, error: next.error, result: next.result });
+        setView({ kind: 'connection', resource: next.resource, primary: next.primary, callerId: next.callerId, error: next.error, result: next.result });
       } else {
         setView({ kind: 'dashboard', resource: next.resource, primary: next.primary, ambiguous: next.ambiguous });
       }
-    }).catch(() => {
-      if (mountedRef.current) setView({ kind: 'error', message: 'Unable to load PostgreSQL manager state' });
+    }).catch((error: unknown) => {
+      if (active) setView({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to load PostgreSQL manager state' });
     }).finally(() => {
-      if (mountedRef.current) setLoading(false);
+      if (active) setLoading(false);
     });
 
     return () => {
-      mountedRef.current = false;
+      active = false;
       controller.abort();
       client.wire.end();
       if (clientRef.current === client) clientRef.current = null;
@@ -127,43 +152,14 @@ export default function App({ createClient = productionClient }: AppProps) {
 
   if (loading || view === null) return <div role="status">Loading</div>;
   if (view.kind === 'error') return <div role="alert">{view.message}</div>;
-
   if (view.kind === 'connection') {
-    return (
-      <ConnectionRequest
-        caller={clientRef.current?.caller}
-        events={clientRef.current?.events}
-        wire={clientRef.current?.wire}
-        currentManagerId={manager ?? ''}
-        callingManagerId={view.callerId}
-        resource={view.resource}
-        primary={view.primary}
-        initialError={view.error}
-        initialResult={view.result}
-      />
-    );
+    return <ConnectionRequest caller={clientRef.current?.caller} events={clientRef.current?.events} wire={clientRef.current?.wire} currentManagerId={manager ?? ''} callingManagerId={view.callerId} resource={view.resource} primary={view.primary} initialError={view.error} initialResult={view.result} />;
   }
-
   if (view.ambiguous) return <div role="alert">PostgreSQL resource state is ambiguous; teardown and reinstall are required.</div>;
   const installed = view.resource !== null && isReadyPrimary(view.primary, view.resource);
   const legacy = view.resource !== null && view.primary === null;
-  return (
-    <main className="p-6 text-xl font-semibold" data-installed={installed ? 'true' : 'false'}>
-      {legacy && <p role="alert">This PostgreSQL installation predates private administrator state. Teardown and reinstall are required.</p>}
-      {installed ? <Teardown wire={clientRef.current!.caller} /> : <Install wire={clientRef.current!.caller} />}
-    </main>
-  );
-}
-
-/** A second read distinguishes an empty resource collection from the helper's
- * fail-closed result for multiple exact resources. */
-async function hasMultiplePrimaryResources(caller: ReturnType<typeof RPC.SetupRPCCaller>): Promise<boolean> {
-  try {
-    const page = await caller.getMyResources('postgres', false, 50, 0);
-    if (!page || !Array.isArray(page.items)) return true;
-    return page.items.filter((item) => item.external === false && item.type === 'postgres' && item.name === 'postgres').length > 1
-      || page.total > page.items.length;
-  } catch {
-    return true;
-  }
+  return <main className="p-6 text-xl font-semibold" data-installed={installed ? 'true' : 'false'}>
+    {legacy && <p role="alert">This PostgreSQL installation predates private administrator state. Teardown and reinstall are required.</p>}
+    {installed ? <Teardown wire={clientRef.current!.caller} /> : <Install wire={clientRef.current!.caller} />}
+  </main>;
 }
