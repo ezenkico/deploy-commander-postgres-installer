@@ -259,10 +259,12 @@ function validateResourcePage(value: unknown): { items: RPC.ResourceItem[]; limi
   if (!isRecord(value) || !Array.isArray(value.items) || !value.items.every(validateResource)) {
     throw new Error('Invalid PostgreSQL resource response');
   }
-  const { limit, offset, total } = value;
-  if (!Number.isSafeInteger(limit) || limit <= 0
-    || !Number.isSafeInteger(offset) || offset < 0
-    || !Number.isSafeInteger(total) || total < 0) {
+  const limit = value.limit;
+  const offset = value.offset;
+  const total = value.total;
+  if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit <= 0
+    || typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0
+    || typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0) {
     throw new Error('Invalid PostgreSQL resource response');
   }
   return {

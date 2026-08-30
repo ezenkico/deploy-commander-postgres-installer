@@ -74,6 +74,22 @@ describe('primary state', () => {
       initializedAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:01:00.000Z',
     });
+    expect(caller.databaseQuery).toHaveBeenCalledWith(
+      'SELECT phase, operation_id, admin_username, admin_password, run_id, resource_id, initialized_at, updated_at FROM postgres_state:primary;',
+      {},
+    );
+  });
+
+  it.each([
+    { results: [{ statement: 1, result: [] }] },
+    { results: [{ statement: 0, result: [] }, { statement: 1, result: [] }] },
+    { results: [] },
+  ])('rejects malformed or multi-statement database results without exposing data', async (response) => {
+    const caller = {
+      databaseQuery: vi.fn().mockResolvedValue(response),
+    } as unknown as RPCCaller;
+
+    await expect(readPrimaryState(caller)).rejects.toThrow('Invalid primary state database result');
   });
 
   it('performs a compare-and-set transition and treats an empty result as lost ownership', async () => {
@@ -103,6 +119,14 @@ describe('primary state', () => {
     const lost = callerWithQuery([]);
     await expect(transitionPrimaryState(lost, 'operation-1', 'install-prepared', 'install-running'))
       .rejects.toThrow('Primary state ownership was lost');
+  });
+
+  it('rejects illegal phase transitions before issuing a database query', async () => {
+    const caller = callerWithQuery(['operation-1']);
+
+    await expect(transitionPrimaryState(caller, 'operation-1', 'ready', 'install-running'))
+      .rejects.toThrow('Invalid primary state transition');
+    expect(caller.databaseQuery).not.toHaveBeenCalled();
   });
 
   it('conditionally deletes state and discovers one exact owned resource across pages', async () => {
@@ -135,5 +159,35 @@ describe('primary state', () => {
     await expect(findPrimaryResource(resourcesCaller)).resolves.toEqual(resource);
     expect(resourcesCaller.getMyResources).toHaveBeenNthCalledWith(1, 'postgres', false, 50, 0);
     expect(resourcesCaller.getMyResources).toHaveBeenNthCalledWith(2, 'postgres', false, 50, 50);
+  });
+
+  it('rejects resource pages with malformed identity fields and fails closed on ambiguity', async () => {
+    const malformedCaller = {
+      getMyResources: vi.fn().mockResolvedValue({
+        items: [{ id: 123, type: 'postgres', name: 'postgres', external: false }],
+        limit: 50,
+        offset: 0,
+        total: 1,
+      }),
+    } as unknown as RPCCaller;
+    await expect(findPrimaryResource(malformedCaller)).rejects.toThrow('Invalid PostgreSQL resource response');
+
+    const resource: RPC.ResourceItem = {
+      id: 'resource-1',
+      type: 'postgres',
+      name: 'postgres',
+      external: false,
+      created_at: '2026-08-30T00:00:00.000Z',
+      updated_at: '2026-08-30T00:00:00.000Z',
+    };
+    const ambiguousCaller = {
+      getMyResources: vi.fn().mockResolvedValue({
+        items: [resource, { ...resource, id: 'resource-2' }],
+        limit: 50,
+        offset: 0,
+        total: 2,
+      }),
+    } as unknown as RPCCaller;
+    await expect(findPrimaryResource(ambiguousCaller)).resolves.toBeNull();
   });
 });
