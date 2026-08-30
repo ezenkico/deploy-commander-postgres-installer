@@ -1,0 +1,86 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import ManagerDashboard from './ManagerDashboard';
+import type { PrimaryState } from '../lib/primaryState';
+
+const resource = {
+  id: 'resource-1', type: 'postgres', name: 'postgres', external: false,
+  created_at: '2026-08-30T00:00:00.000Z', updated_at: '2026-08-30T00:00:00.000Z',
+};
+const primary: PrimaryState = {
+  phase: 'ready', operationId: 'install-1',
+  credentials: { username: 'pg_admin_hidden', password: 'never-render' },
+  runId: 'run-1', resourceId: 'resource-1', initializedAt: '2026-08-30T00:00:00.000Z',
+  updatedAt: '2026-08-30T00:00:00.000Z',
+};
+
+afterEach(() => cleanup());
+
+function renderDashboard(overrides: Partial<React.ComponentProps<typeof ManagerDashboard>> = {}) {
+  return render(<ManagerDashboard
+    resource={null}
+    primary={null}
+    busy={false}
+    error={null}
+    permissionRemembered={false}
+    onInstall={vi.fn()}
+    onTeardown={vi.fn()}
+    onRetry={vi.fn()}
+    onResetPermission={vi.fn()}
+    {...overrides}
+  />);
+}
+
+describe('ManagerDashboard', () => {
+  it('offers installation when no PostgreSQL resource exists', () => {
+    const onInstall = vi.fn();
+    renderDashboard({ onInstall });
+    expect(screen.getByRole('heading', { name: 'Install PostgreSQL' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Install PostgreSQL' }));
+    expect(onInstall).toHaveBeenCalledOnce();
+  });
+
+  it('shows the installed card and destructive teardown action for ready state', () => {
+    const onTeardown = vi.fn();
+    renderDashboard({ resource, primary, permissionRemembered: true, onTeardown });
+    expect(screen.getByRole('heading', { name: 'PostgreSQL is installed' })).toBeInTheDocument();
+    expect(screen.getByText(/approval is remembered/i)).toBeInTheDocument();
+    expect(screen.getByText('resource-1')).toBeInTheDocument();
+    expect(screen.queryByText('pg_admin_hidden')).not.toBeInTheDocument();
+    expect(screen.queryByText('never-render')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Teardown PostgreSQL' }));
+    expect(onTeardown).toHaveBeenCalledOnce();
+  });
+
+  it('shows recovery state with a retry action and disables controls while busy', () => {
+    const onRetry = vi.fn();
+    renderDashboard({ resource, primary: { ...primary, phase: 'install-running' }, busy: true, onRetry });
+    expect(screen.getByRole('heading', { name: 'PostgreSQL installation needs recovery' })).toBeInTheDocument();
+    expect(screen.getByText(/installation state is incomplete/i)).toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: 'Retry recovery' });
+    expect(retry).toBeDisabled();
+    fireEvent.click(retry);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it('identifies legacy resources and allows teardown without offering a new install', () => {
+    renderDashboard({ resource });
+    expect(screen.getByRole('heading', { name: 'PostgreSQL requires reinstall' })).toBeInTheDocument();
+    expect(screen.getByText(/predates private administrator state/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install PostgreSQL' })).not.toBeInTheDocument();
+  });
+
+  it('supports resetting only the current remembered permission', () => {
+    const onResetPermission = vi.fn();
+    renderDashboard({ resource, primary, permissionRemembered: true, onResetPermission });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset remembered connection approval' }));
+    expect(onResetPermission).toHaveBeenCalledOnce();
+  });
+
+  it('renders non-secret errors and no credential values', () => {
+    renderDashboard({ error: 'PostgreSQL recovery is required', primary });
+    expect(screen.getByRole('alert')).toHaveTextContent('PostgreSQL recovery is required');
+    expect(screen.queryByText('pg_admin_hidden')).not.toBeInTheDocument();
+    expect(screen.queryByText('never-render')).not.toBeInTheDocument();
+  });
+});
