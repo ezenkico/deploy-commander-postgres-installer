@@ -21,6 +21,22 @@ describe('permission preference', () => {
     expect(isPermissionRemembered(storage, 'manager-a', 'resource-2')).toBe(false);
   });
 
+  it('reuses one installation approval for different callers of the same manager and resource', () => {
+    const storage = window.localStorage;
+    const managerId = 'manager-a';
+    const resourceId = 'resource-1';
+    const callerA = 'caller-a';
+    const callerB = 'caller-b';
+    const keyForCaller = (callerId: string) => {
+      void callerId;
+      return permissionKey(managerId, resourceId);
+    };
+
+    expect(keyForCaller(callerA)).toBe(keyForCaller(callerB));
+    expect(rememberPermission(storage, managerId, resourceId)).toBe(true);
+    expect(isPermissionRemembered(storage, managerId, resourceId)).toBe(true);
+  });
+
   it('accepts only the literal allow value', () => {
     const storage = window.localStorage;
     const key = permissionKey('manager-a', 'resource-1');

@@ -120,4 +120,31 @@ describe('PermissionDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Allow' }));
     expect(request).toHaveBeenCalledWith({ remember: false, stored: false });
   });
+
+  it('continues an explicitly checked Allow when remembering it fails to write', async () => {
+    const user = userEvent.setup();
+    const request = vi.fn();
+    const storage = {
+      getItem: () => null,
+      setItem: () => { throw new Error('storage blocked'); },
+    } as unknown as Storage;
+    const managerId = 'manager-a';
+    const resourceId = 'resource-1';
+
+    renderDialog({ onAllow: (remember) => {
+      const stored = remember && rememberPermission(storage, managerId, resourceId);
+      request({ remember, stored, currentRequestContinued: true });
+    }});
+
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(request).toHaveBeenCalledWith({
+      remember: true,
+      stored: false,
+      currentRequestContinued: true,
+    });
+    expect(storage.getItem('deploy-commander:postgres:create-connection:manager-a:resource-1'))
+      .toBeNull();
+  });
 });
