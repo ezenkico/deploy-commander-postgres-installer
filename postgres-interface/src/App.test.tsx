@@ -69,9 +69,9 @@ describe('App lifecycle and resource routing', () => {
     const client = appClient();
     const factory: AppClientFactory = () => client;
     render(<App createClient={factory} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Install Postgres' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Install PostgreSQL' })).toBeInTheDocument());
     client.events.publish({ eventType: 'run-start', event: 'event', data: { id: 'other-run', manager: 'other', action: 'create' } } as never);
-    expect(screen.getByRole('button', { name: 'Install Postgres' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Install PostgreSQL' })).toBeInTheDocument();
   });
 
   it('fails closed when private primary state is unresolved', async () => {
