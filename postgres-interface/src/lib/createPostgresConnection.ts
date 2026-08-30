@@ -1,6 +1,6 @@
 import type { RPCCaller, RPC } from '@ezenki/deploy-commander-installer-interface';
 import type { LogicalCredentials } from './credentials';
-import { buildConnectionMetadata, buildProvisionPlan } from './postgresPlans';
+import { buildCleanupPlan, buildConnectionMetadata, buildProvisionPlan } from './postgresPlans';
 import { isPermissionRemembered, rememberPermission } from './permissionPreference';
 import {
   acquireOperation,
@@ -48,6 +48,10 @@ export interface ConnectionWorkflowDeps {
 
 const PAGE_LIMIT = 50;
 const RUNNER_IMAGE = 'ezenki/deploy-commander-runner:latest';
+const START_ERROR = 'Unable to start PostgreSQL provisioning';
+const RUN_ERROR = 'PostgreSQL provisioning failed';
+const PERSIST_ERROR = 'Unable to save the PostgreSQL connection';
+const CLEANUP_ERROR = 'Unable to clean up PostgreSQL provisioning';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -78,6 +82,12 @@ function assertRequest(request: ConnectionRequest): PlatformConnection {
   }
   if (!isRecord(request.primary)
     || request.primary.phase !== 'ready'
+    || !isNonBlank(request.primary.operationId)
+    || !isNonBlank(request.primary.runId)
+    || !isNonBlank(request.primary.initializedAt)
+    || !isRecord(request.primary.credentials)
+    || !isNonBlank(request.primary.credentials.username)
+    || !isNonBlank(request.primary.credentials.password)
     || !isNonBlank(request.primary.resourceId)
     || request.primary.resourceId !== request.resource.id) {
     throw new Error('Invalid ready PostgreSQL state');
@@ -128,6 +138,8 @@ function validatePage(value: unknown): { items: RPC.ConnectionItem[]; limit: num
     || typeof value.total !== 'number' || !Number.isSafeInteger(value.total) || value.total < 0) {
     throw invalidConnection();
   }
+  const total = value.total;
+  if (value.items.length === 0 && total > 0) throw invalidConnection();
   return {
     items: value.items as unknown as RPC.ConnectionItem[],
     limit: value.limit,
@@ -157,6 +169,7 @@ export async function findExistingConnection(
 ): Promise<RPC.CreateConnection | null> {
   if (!isNonBlank(callingManagerId) || !isNonBlank(resourceId)) throw invalidConnection();
   let offset = 0;
+  let found: RPC.CreateConnection | null = null;
   while (true) {
     let response: unknown;
     try {
@@ -173,9 +186,10 @@ export async function findExistingConnection(
       } catch {
         throw new Error('PostgreSQL connection lookup failed');
       }
-      return validateFullConnection(full, summary, callingManagerId, resourceId);
+      if (found !== null) throw invalidConnection();
+      found = validateFullConnection(full, summary, callingManagerId, resourceId);
     }
-    if (page.items.length === 0 || offset + page.items.length >= page.total) return null;
+    if (page.items.length === 0 || offset + page.items.length >= page.total) return found;
     offset += page.limit;
   }
 }
@@ -206,6 +220,46 @@ async function discardOperation(caller: RPCCaller, operation: OperationRecord): 
   }
 }
 
+function isAbort(error: unknown): boolean {
+  return isRecord(error) && error.name === 'AbortError';
+}
+
+async function cleanUpRacedProvision(
+  deps: ConnectionWorkflowDeps,
+  request: ConnectionRequest,
+  platform: PlatformConnection,
+  credentials: LogicalCredentials,
+  operation: ConnectionOperation,
+): Promise<void> {
+  await transitionOperation(deps.caller, operation.operationId, 'cleanup-required', 'cleanup-starting');
+  let started: unknown;
+  try {
+    started = await deps.caller.start(
+      'cleanup-connection',
+      RUNNER_IMAGE,
+      buildCleanupPlan(request.primary, credentials.database, credentials.username, platform),
+      `postgres-cleanup:${operation.operationId}`,
+    );
+  } catch {
+    throw new Error(CLEANUP_ERROR);
+  }
+  if (!isRecord(started) || !isNonBlank(started.id)) throw new Error(CLEANUP_ERROR);
+  await transitionOperation(deps.caller, operation.operationId, 'cleanup-starting', {
+    phase: 'cleanup-running', cleanupRunId: started.id,
+  });
+  try {
+    await deps.waitForRun(deps.caller, deps.events, started.id, { signal: deps.signal });
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    throw new Error(CLEANUP_ERROR);
+  }
+  try {
+    await deleteOperation(deps.caller, operation.operationId);
+  } catch {
+    // The existing connection is authoritative; recovery can remove stale state later.
+  }
+}
+
 function isPermissionDecision(value: unknown): value is PermissionDecision {
   return isRecord(value) && typeof value.allowed === 'boolean' && typeof value.remember === 'boolean';
 }
@@ -233,43 +287,74 @@ export async function createPostgresConnection(
   throwIfAborted(deps.signal);
 
   const credentials = deps.generateCredentials();
+  // Validate all secret-bearing inputs before creating the durable journal record.
+  buildProvisionPlan(request.primary, credentials, platform);
   const operation = makeOperation(request, credentials);
   // Generated credentials are local values and are deliberately not attached to errors.
   await acquireOperation(deps.caller, operation);
+  if (deps.signal.aborted) {
+    await discardOperation(deps.caller, operation);
+    throw abortError();
+  }
 
   // Revalidate the caller-provided ready identity after taking the manager-wide lock.
-  const revalidatedPlatform = assertRequest(request);
-  if (revalidatedPlatform.data.network !== platform.data.network) {
+  let revalidatedPlatform: PlatformConnection;
+  let plan: ReturnType<typeof buildProvisionPlan>;
+  try {
+    revalidatedPlatform = assertRequest(request);
+    if (revalidatedPlatform.data.network !== platform.data.network) throw new Error('Invalid ready PostgreSQL state');
+    plan = buildProvisionPlan(request.primary, credentials, revalidatedPlatform);
+  } catch (error) {
     await discardOperation(deps.caller, operation);
-    throw new Error('Invalid ready PostgreSQL state');
+    throw error;
   }
-  const plan = buildProvisionPlan(request.primary, credentials, revalidatedPlatform);
   await transitionOperation(deps.caller, operation.operationId, 'prepared', 'provision-starting');
-  const started = await deps.caller.start(
-    'create-connection',
-    RUNNER_IMAGE,
-    plan,
-    `postgres-provision:${operation.operationId}`,
-  );
-  if (!isRecord(started) || !isNonBlank(started.id)) throw new Error('Invalid provisioning run response');
+  // Once this phase is recorded, an abort retains the journal for recovery because start is ambiguous.
+  if (deps.signal.aborted) throw abortError();
+  let started: unknown;
+  try {
+    started = await deps.caller.start(
+      'create-connection',
+      RUNNER_IMAGE,
+      plan,
+      `postgres-provision:${operation.operationId}`,
+    );
+  } catch {
+    throw new Error(START_ERROR);
+  }
+  if (!isRecord(started) || !isNonBlank(started.id)) throw new Error(START_ERROR);
   await transitionOperation(deps.caller, operation.operationId, 'provision-starting', {
     phase: 'provision-running', provisionRunId: started.id,
   });
-  await deps.waitForRun(deps.caller, deps.events, started.id, { signal: deps.signal });
+  try {
+    await deps.waitForRun(deps.caller, deps.events, started.id, { signal: deps.signal });
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    throw new Error(RUN_ERROR);
+  }
   await transitionOperation(deps.caller, operation.operationId, 'provision-running', 'provisioned');
 
   await transitionOperation(deps.caller, operation.operationId, 'provisioned', 'persisting');
+  await transitionOperation(deps.caller, operation.operationId, 'persisting', 'reconciliation-required');
   const raced = await findExistingConnection(deps.caller, request.callingManagerId, request.resource.id);
   if (raced) {
-    await discardOperation(deps.caller, operation);
+    await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
+      phase: 'cleanup-required', cleanupReason: 'duplicate-race',
+    });
+    await cleanUpRacedProvision(deps, request, revalidatedPlatform, credentials, operation);
     return raced;
   }
-  const created = await deps.caller.createConnection(
-    buildConnectionMetadata(credentials),
-    request.callingManagerId,
-    false,
-    request.resource.id,
-  );
+  let created: RPC.CreateConnection;
+  try {
+    created = await deps.caller.createConnection(
+      buildConnectionMetadata(credentials),
+      request.callingManagerId,
+      false,
+      request.resource.id,
+    );
+  } catch {
+    throw new Error(PERSIST_ERROR);
+  }
   try {
     await deleteOperation(deps.caller, operation.operationId);
   } catch {
