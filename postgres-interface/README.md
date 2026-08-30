@@ -4,6 +4,8 @@ This manager installs one persistent PostgreSQL 15 service and provisions isolat
 
 ## Interface contract
 
+For the complete consumer-facing contract and an integration example, see [PostgreSQL Manager Interface Guide](../docs/integrations/POSTGRES_MANAGER_INTERFACE_GUIDE.md).
+
 The parent interface starts this manager with the exact metadata object:
 
 ```json
