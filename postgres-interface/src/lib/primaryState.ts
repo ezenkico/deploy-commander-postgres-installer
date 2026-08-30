@@ -255,7 +255,7 @@ function validateResource(value: unknown): value is RPC.ResourceItem {
     && typeof value.external === 'boolean';
 }
 
-function validateResourcePage(value: unknown): { items: RPC.ResourceItem[]; limit: number; offset: number; total: number } {
+function validateResourcePage(value: unknown, expectedOffset: number): { items: RPC.ResourceItem[]; limit: number; offset: number; total: number } {
   if (!isRecord(value) || !Array.isArray(value.items) || !value.items.every(validateResource)) {
     throw new Error('Invalid PostgreSQL resource response');
   }
@@ -265,6 +265,14 @@ function validateResourcePage(value: unknown): { items: RPC.ResourceItem[]; limi
   if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit <= 0
     || typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0
     || typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0) {
+    throw new Error('Invalid PostgreSQL resource response');
+  }
+  if (offset !== expectedOffset
+    || value.items.length === 0 && total > 0
+    || value.items.length > limit
+    || value.items.length > total
+    || offset > total
+    || offset + value.items.length > total) {
     throw new Error('Invalid PostgreSQL resource response');
   }
   return {
@@ -286,7 +294,7 @@ export async function findPrimaryResource(caller: RPCCaller): Promise<RPC.Resour
     } catch {
       throw new Error('PostgreSQL resource lookup failed');
     }
-    const page = validateResourcePage(response);
+    const page = validateResourcePage(response, offset);
     for (const resource of page.items) {
       if (!resource.external && resource.type === 'postgres' && resource.name === 'postgres') {
         matches.push(resource);

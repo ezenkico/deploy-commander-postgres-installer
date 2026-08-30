@@ -70,6 +70,12 @@ describe('createPostgresConnection validation and idempotency', () => {
     expect(malformed.caller.databaseQuery).not.toHaveBeenCalled();
   });
 
+  it('rejects a primary state with a malformed updated timestamp before locking', async () => {
+    const d = deps();
+    await expect(createPostgresConnection(d, request({ primary: { ...primary, updatedAt: 'not-a-timestamp' } }))).rejects.toThrow('ready PostgreSQL state');
+    expect(d.caller.databaseQuery).not.toHaveBeenCalled();
+  });
+
   it('returns a valid existing connection before permission or lock work', async () => {
     const existing = { id: 'connection-1', manager: 'manager-2', resource: 'resource-1', external: false,
       created_at: 'now', updated_at: 'now' };
@@ -250,6 +256,17 @@ describe('findExistingConnection', () => {
         .mockResolvedValueOnce({ items: [second], limit: 1, offset: 1, total: 2 }),
       getConnection: vi.fn().mockImplementation(async (id: string) => ({ connection: id === 'c1' ? first : second, config: { id, manager: 'manager-2', resource: 'resource-1', metadata: {} } })),
     } as unknown as RPCCaller;
+    await expect(findExistingConnection(caller, 'manager-2', 'resource-1')).rejects.toThrow('connection');
+  });
+
+  it.each([
+    { items: [{ id: 'c1' }], limit: 50, offset: 1, total: 1 },
+    { items: [{ id: 'c1' }], limit: 50, offset: 0, total: 0 },
+    { items: [{ id: 'c1' }, { id: 'c2' }], limit: 50, offset: 0, total: 1 },
+    { items: [], limit: 50, offset: 1, total: 0 },
+    { items: [], limit: 50, offset: 0, total: 1 },
+  ])('rejects inconsistent connection page metadata %#', async (page) => {
+    const caller = { getConnections: vi.fn().mockResolvedValue(page) } as unknown as RPCCaller;
     await expect(findExistingConnection(caller, 'manager-2', 'resource-1')).rejects.toThrow('connection');
   });
 });

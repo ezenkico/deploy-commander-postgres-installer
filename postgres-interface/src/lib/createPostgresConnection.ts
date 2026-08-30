@@ -63,6 +63,10 @@ function isNonBlank(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function isValidTimestamp(value: unknown): value is string {
+  return isNonBlank(value) && Number.isFinite(Date.parse(value));
+}
+
 function invalidConnection(): Error {
   return new Error('Invalid PostgreSQL connection response');
 }
@@ -89,7 +93,8 @@ function assertRequest(request: ConnectionRequest): PlatformConnection {
     || !isNonBlank(request.primary.credentials.username)
     || !isNonBlank(request.primary.credentials.password)
     || !isNonBlank(request.primary.resourceId)
-    || request.primary.resourceId !== request.resource.id) {
+    || request.primary.resourceId !== request.resource.id
+    || !isValidTimestamp(request.primary.updatedAt)) {
     throw new Error('Invalid ready PostgreSQL state');
   }
   return parsePlatformConnection(request.platform);
@@ -129,7 +134,7 @@ function validateSummary(value: unknown, callingManagerId: string, resourceId: s
     && isNonBlank(value.updated_at);
 }
 
-function validatePage(value: unknown): { items: RPC.ConnectionItem[]; limit: number; offset: number; total: number } {
+function validatePage(value: unknown, expectedOffset: number): { items: RPC.ConnectionItem[]; limit: number; offset: number; total: number } {
   if (!isRecord(value) || !Array.isArray(value.items) || !value.items.every((item) => isRecord(item))) {
     throw invalidConnection();
   }
@@ -139,7 +144,15 @@ function validatePage(value: unknown): { items: RPC.ConnectionItem[]; limit: num
     throw invalidConnection();
   }
   const total = value.total;
-  if (value.items.length === 0 && total > 0) throw invalidConnection();
+  const offset = value.offset;
+  if (offset !== expectedOffset
+    || value.items.length === 0 && total > 0
+    || value.items.length > value.limit
+    || value.items.length > total
+    || offset > total
+    || offset + value.items.length > total) {
+    throw invalidConnection();
+  }
   return {
     items: value.items as unknown as RPC.ConnectionItem[],
     limit: value.limit,
@@ -177,7 +190,7 @@ export async function findExistingConnection(
     } catch {
       throw new Error('PostgreSQL connection lookup failed');
     }
-    const page = validatePage(response);
+    const page = validatePage(response, offset);
     for (const summary of page.items) {
       if (!validateSummary(summary, callingManagerId, resourceId)) throw invalidConnection();
       let full: unknown;

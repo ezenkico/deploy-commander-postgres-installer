@@ -20,6 +20,14 @@ const state: PrimaryState = {
   initializedAt: null,
   updatedAt: '2026-08-30T00:00:00.000Z',
 };
+const pageResource: RPC.ResourceItem = {
+  id: 'resource-1',
+  type: 'postgres',
+  name: 'postgres',
+  external: false,
+  created_at: '2026-08-30T00:00:00.000Z',
+  updated_at: '2026-08-30T00:00:00.000Z',
+};
 
 function callerWithQuery(result: unknown): RPCCaller & { databaseQuery: ReturnType<typeof vi.fn> } {
   return {
@@ -189,5 +197,16 @@ describe('primary state', () => {
       }),
     } as unknown as RPCCaller;
     await expect(findPrimaryResource(ambiguousCaller)).resolves.toBeNull();
+  });
+
+  it.each([
+    { items: [pageResource], limit: 50, offset: 1, total: 1 },
+    { items: [pageResource], limit: 50, offset: 0, total: 0 },
+    { items: [pageResource, { ...pageResource, id: 'resource-2' }], limit: 50, offset: 0, total: 1 },
+    { items: [], limit: 50, offset: 1, total: 0 },
+    { items: [], limit: 50, offset: 0, total: 1 },
+  ])('rejects inconsistent resource page metadata %#', async (page) => {
+    const caller = { getMyResources: vi.fn().mockResolvedValue(page) } as unknown as RPCCaller;
+    await expect(findPrimaryResource(caller)).rejects.toThrow('Invalid PostgreSQL resource response');
   });
 });
