@@ -16,14 +16,14 @@ Your implementation should convert the manager’s configuration, user input, an
 
 The resulting configuration must tell the runner:
 
-* Which services should exist
-* Which one-time runner steps should execute
-* Which volumes should exist
-* Which services or volumes should be removed
-* Which resources services provide
-* Which resource connections services consume
-* Which Deploy Commander connections should be created or removed
-* Whether the manager redirect should be set, changed, or cleared
+- Which services should exist
+- Which one-time runner steps should execute
+- Which volumes should exist
+- Which services or volumes should be removed
+- Which resources services provide
+- Which resource connections services consume
+- Which Deploy Commander connections should be created or removed
+- Whether the manager redirect should be set, changed, or cleared
 
 The manager defines intent.
 
@@ -33,13 +33,36 @@ The runner performs the platform-specific execution.
 
 Before implementing a manager with this runner, read:
 
-* The project’s top-level `AGENTS.md`
-* The manager project’s own `AGENTS.md`
-* The runner models under `runner/models`
-* Any manager interface or RPC documentation used to obtain resources and connections
-* The manager’s input and configuration models
+- The project’s top-level `AGENTS.md`
+- The manager project’s own `AGENTS.md`
+- Any manager interface or RPC documentation used to obtain resources and connections
+- The manager’s input and configuration models
 
-Do not guess field names or JSON structures when the shared runner models are available.
+This guide is intended to be sufficient when the runner source is not available to the implementing AI agent. The Go models and JSON examples below are the public manager-to-runner contract.
+
+If shared runner models are available as a dependency, use them instead of creating duplicate types. Otherwise, reproduce only the contract required by the manager and preserve the JSON names, optionality, and nil semantics documented here.
+
+Do not guess fields that are not documented in this guide. In particular, do not assume that a field accepted by Docker, a container image, or another deployment system is also accepted by this runner.
+
+## Contract Boundary and Source Availability
+
+An AI agent implementing a manager may rely on this guide without access to the runner checkout. It may:
+
+- Generate the documented runner configuration and metadata
+- Validate manager input before producing metadata
+- Use the documented Docker platform-connection payload
+- Test the manager’s serialization and planning behavior
+
+It may not use this guide alone to add or change runner capabilities. A new metadata field is a versioned contract change that requires the runner source, including its shared model, platform translation, validation, cleanup behavior, tests, and documentation.
+
+When a requested manager feature needs a field not documented here:
+
+1. Do not emit the speculative field.
+2. State that the installed runner contract does not support the feature.
+3. Request the runner checkout or a runner version that explicitly implements the field.
+4. If another repository owns related state, such as manager run-status values, request that repository or its authoritative API contract as well.
+
+The runner implementation currently stores the service contract in `models/metadata_services.go` and translates services into Docker containers in `services/docker/setup.go`. These paths are provided only to help a maintainer locate the implementation after obtaining the runner source; their contents are fully summarized by this guide for ordinary manager work.
 
 ## Runner Input
 
@@ -103,9 +126,9 @@ teardown
 
 A `teardown` action removes the manager’s labeled:
 
-* Containers
-* Volumes
-* Networks
+- Containers
+- Volumes
+- Networks
 
 All other action values currently use the normal setup and reconciliation flow.
 
@@ -147,15 +170,9 @@ Example:
       ]
     }
   },
-  "volumes": [
-    "app-data"
-  ],
-  "remove_services": [
-    "old-worker"
-  ],
-  "remove_volumes": [
-    "old-data"
-  ]
+  "volumes": ["app-data"],
+  "remove_services": ["old-worker"],
+  "remove_volumes": ["old-data"]
 }
 ```
 
@@ -169,10 +186,10 @@ Optional fields use pointers deliberately.
 
 The following states may have different meanings:
 
-* Field omitted or pointer is nil
-* Field present with an empty array
-* Field present with a non-empty array
-* Nested field present with a nil value
+- Field omitted or pointer is nil
+- Field present with an empty array
+- Field present with a non-empty array
+- Nested field present with a nil value
 
 Do not convert every nil field into an empty collection automatically.
 
@@ -210,9 +227,7 @@ Example:
     },
     "app": {
       "image": "example/app:latest",
-      "depends_on": [
-        "database"
-      ]
+      "depends_on": ["database"]
     }
   }
 }
@@ -222,18 +237,18 @@ The map key is the service identity.
 
 It is used for:
 
-* Dependency references
-* Docker container naming
-* Docker labels
-* Removal requests
-* Service ordering
+- Dependency references
+- Docker container naming
+- Docker labels
+- Removal requests
+- Service ordering
 
 Choose service keys that are:
 
-* Stable
-* Unique within the manager
-* Human-readable
-* Safe to use as part of a Docker object name
+- Stable
+- Unique within the manager
+- Human-readable
+- Safe to use as part of a Docker object name
 
 Do not use dynamically generated service keys unless the manager truly creates dynamic service instances.
 
@@ -245,17 +260,18 @@ A service supports:
 
 ```go
 type MetadataService struct {
-	Image         string
-	Aliases       *[]string
-	NetworkGroups *[]string
-	Role          *ServiceRole
-	DependsOn     *[]string
-	Bindings      *[]BindingSpec
-	Connections   *[]ResourceConnection
-	Resources     *[]CreateResourceSpec
-	Environment   map[string]string
-	Volumes       *[]VolumeMount
-	Scale         *ScaleSpec
+	Image         string                `json:"image"`
+	Command       *[]string             `json:"command,omitempty"`
+	Aliases       *[]string             `json:"aliases,omitempty"`
+	NetworkGroups *[]string             `json:"network_groups,omitempty"`
+	Role          *ServiceRole          `json:"role,omitempty"`
+	DependsOn     *[]string             `json:"depends_on,omitempty"`
+	Bindings      *[]BindingSpec        `json:"bindings,omitempty"`
+	Connections   *[]ResourceConnection `json:"connections,omitempty"`
+	Resources     *[]CreateResourceSpec `json:"resources,omitempty"`
+	Environment   map[string]string     `json:"environment,omitempty"`
+	Volumes       *[]VolumeMount        `json:"volumes,omitempty"`
+	Scale         *ScaleSpec            `json:"scale,omitempty"`
 }
 ```
 
@@ -273,6 +289,25 @@ A minimal service requires an image:
 
 Do not emit a service with an empty image.
 
+### Commands
+
+`command` is an optional array of strings mapped to Docker `Config.Cmd`.
+
+```json
+{
+  "image": "example/app:latest",
+  "command": ["serve", "--port", "8080"]
+}
+```
+
+Its semantics are:
+
+- Omitted or `null`: preserve the image’s default command.
+- Non-empty array: replace Docker `Cmd` with the supplied argument vector.
+- Empty array: invalid for Docker metadata validation; do not emit it.
+
+This field changes only `Cmd`; it does not change the image entrypoint. Each array element is passed as one argument, with no shell parsing or string splitting by the runner. Use a runner-role service when the command is one-time work; normal services retain their usual restart behavior.
+
 ## Long-Running Services
 
 The default service role is a long-running service.
@@ -287,13 +322,13 @@ It may be explicitly represented as:
 
 A normal service container:
 
-* Is started by Docker
-* Uses an always-restart policy
-* Remains running after the runner exits
-* May expose ports
-* May mount volumes
-* May provide resources
-* May consume resource connections
+- Is started by Docker
+- Uses an always-restart policy
+- Remains running after the runner exits
+- May expose ports
+- May mount volumes
+- May provide resources
+- May consume resource connections
 
 The role may be omitted for normal services.
 
@@ -315,9 +350,7 @@ Example:
     },
     "app": {
       "image": "example/app:latest",
-      "depends_on": [
-        "migrate"
-      ]
+      "depends_on": ["migrate"]
     }
   }
 }
@@ -325,16 +358,30 @@ Example:
 
 A runner-role container:
 
-* Uses no restart policy
-* Starts once
-* Streams stdout and stderr
-* Blocks dependent services until it completes
-* Is removed after completion
-* Fails the run when it exits with a nonzero status
+- Uses no restart policy
+- Starts once
+- Streams stdout and stderr
+- Blocks dependent services until it completes
+- Is removed after completion
+- Fails the run when it exits with a nonzero status
 
 Do not use a runner role for a process that must remain active.
 
 Do not create dependency cycles between runner and service containers.
+
+## Execution Success and Run Status
+
+The runner has no public manager run-status enum in this contract.
+
+Runner execution succeeds when all requested platform operations return successfully. For a `runner`-role container, exit code `0` is success; every nonzero exit code is returned as an execution error. For the top-level runner process, successful platform execution returns normally and any returned error causes the process to fail.
+
+Do not translate these outcomes into guessed manager status strings or numbers. The manager or commander framework owns its run-status type and the terminal value that means success. Use the constants and completion API provided by that framework. If those definitions are unavailable, request the authoritative manager/commander contract before implementing status updates.
+
+This distinction is important:
+
+- Container exit status belongs to the executed workload.
+- Runner process success or failure belongs to platform execution.
+- Manager run status belongs to the manager or commander framework.
 
 ## Dependencies
 
@@ -348,9 +395,7 @@ Dependencies reference service map keys:
     },
     "app": {
       "image": "example/app:latest",
-      "depends_on": [
-        "database"
-      ]
+      "depends_on": ["database"]
     }
   }
 }
@@ -360,8 +405,8 @@ Every dependency must exist in the same `services` map for that run.
 
 The runner rejects:
 
-* Missing dependency keys
-* Circular dependency graphs
+- Missing dependency keys
+- Circular dependency graphs
 
 Dependencies control setup ordering only.
 
@@ -404,22 +449,15 @@ Example:
   "services": {
     "proxy": {
       "image": "example/proxy:latest",
-      "network_groups": [
-        "frontend"
-      ]
+      "network_groups": ["frontend"]
     },
     "app": {
       "image": "example/app:latest",
-      "network_groups": [
-        "frontend",
-        "backend"
-      ]
+      "network_groups": ["frontend", "backend"]
     },
     "database": {
       "image": "postgres:18",
-      "network_groups": [
-        "backend"
-      ]
+      "network_groups": ["backend"]
     }
   }
 }
@@ -435,9 +473,9 @@ Do not use network groups to reference a resource owned by another manager. Use 
 
 When a service has no:
 
-* Network groups
-* Platform resource connection networks
-* Produced resource networks
+- Network groups
+- Platform resource connection networks
+- Produced resource networks
 
 the Docker runner attaches it to a manager-level default network.
 
@@ -453,10 +491,7 @@ Example:
 
 ```json
 {
-  "aliases": [
-    "api",
-    "internal-api"
-  ]
+  "aliases": ["api", "internal-api"]
 }
 ```
 
@@ -470,10 +505,7 @@ Top-level volumes declare manager-owned persistent volumes:
 
 ```json
 {
-  "volumes": [
-    "database-data",
-    "uploads"
-  ]
+  "volumes": ["database-data", "uploads"]
 }
 ```
 
@@ -492,14 +524,14 @@ A service mounts a declared volume using:
 
 Mount paths must:
 
-* Be non-empty
-* Be absolute
-* Be unique within the service
+- Be non-empty
+- Be absolute
+- Be unique within the service
 
 Volume names must:
 
-* Be non-empty
-* Be unique in `metadata.volumes`
+- Be non-empty
+- Be unique in `metadata.volumes`
 
 A named volume that is not declared in the current metadata must already exist for that manager.
 
@@ -532,9 +564,7 @@ Volumes are removed using logical names:
 
 ```json
 {
-  "remove_volumes": [
-    "old-data"
-  ]
+  "remove_volumes": ["old-data"]
 }
 ```
 
@@ -577,9 +607,9 @@ type BindingSpec struct {
 
 The current Docker runner applies:
 
-* `container_port`
-* `host_port`
-* `host_ip`
+- `container_port`
+- `host_port`
+- `host_ip`
 
 `container_ip` is not currently implemented.
 
@@ -685,7 +715,7 @@ Do not use a container-local address as a public connection.
 
 Services consume resolved resources through `connections`.
 
-A Docker platform connection has this conceptual structure:
+A Docker platform connection has this exact serialized structure:
 
 ```json
 {
@@ -724,12 +754,14 @@ For Docker, the runner:
 
 Use the network name exactly as returned by the resource connection.
 
+The `data` object must contain a non-empty string field named `network`. The runner does not accept a resource name, service name, manager ID, container name, or URL in place of this Docker network name.
+
 Do not:
 
-* Prefix it with the current manager ID
-* Reconstruct it from a resource name
-* Create it yourself
-* Substitute a network group name
+- Prefix it with the current manager ID
+- Reconstruct it from a resource name
+- Create it yourself
+- Substitute a network group name
 
 The resource-owning manager is responsible for creating that network.
 
@@ -781,9 +813,9 @@ Example:
 
 A create specification contains:
 
-* The manager receiving the connection
-* A resource reference
-* Arbitrary connection metadata
+- The manager receiving the connection
+- A resource reference
+- Arbitrary connection metadata
 
 The current runner requires the resource reference to contain an existing resource UUID:
 
@@ -812,8 +844,8 @@ Do not emit service/name references until runner-side resolution is implemented.
 
 A connection removal currently requires both:
 
-* The connection UUID
-* The related resource UUID
+- The connection UUID
+- The related resource UUID
 
 Example:
 
@@ -873,8 +905,7 @@ Clear the redirect:
 Do not update the redirect:
 
 ```json
-{
-}
+{}
 ```
 
 or omit `redirect` from the metadata.
@@ -889,9 +920,7 @@ Services are removed by service key:
 
 ```json
 {
-  "remove_services": [
-    "old-worker"
-  ]
+  "remove_services": ["old-worker"]
 }
 ```
 
@@ -903,10 +932,10 @@ Use the exact stable service key originally used to create the service.
 
 Do not use:
 
-* Container IDs
-* Image names
-* Resource names
-* Network aliases
+- Container IDs
+- Image names
+- Resource names
+- Network aliases
 
 in `remove_services`.
 
@@ -967,12 +996,12 @@ The runner does not perform a full declarative comparison against every existing
 
 It performs the operations explicitly represented by metadata:
 
-* Services in `services` are created or replaced.
-* Volumes in `volumes` are created if missing.
-* Services in `remove_services` are removed.
-* Volumes in `remove_volumes` are removed.
-* Connection plans are applied.
-* Redirect changes are applied.
+- Services in `services` are created or replaced.
+- Volumes in `volumes` are created if missing.
+- Services in `remove_services` are removed.
+- Volumes in `remove_volumes` are removed.
+- Connection plans are applied.
+- Redirect changes are applied.
 
 The manager implementation is responsible for generating the correct operation plan.
 
@@ -1008,20 +1037,20 @@ Generated metadata should be safe to apply more than once where practical.
 
 Prefer:
 
-* Stable service keys
-* Stable resource names
-* Stable volume names
-* Stable network group names
-* Deterministic configuration
-* Explicit removals
+- Stable service keys
+- Stable resource names
+- Stable volume names
+- Stable network group names
+- Deterministic configuration
+- Explicit removals
 
 Avoid:
 
-* Random service names
-* Random resource names
-* Recreating connection plans without checking current connections
-* Deleting and recreating persistent volumes during ordinary updates
-* Using timestamps as identities
+- Random service names
+- Random resource names
+- Recreating connection plans without checking current connections
+- Deleting and recreating persistent volumes during ordinary updates
+- Using timestamps as identities
 
 The runner replaces a service container when that service appears in the current setup plan.
 
@@ -1033,13 +1062,13 @@ Before generating removal or connection operations, use the Deploy Commander man
 
 Relevant queries may include:
 
-* Existing manager resources
-* Existing connections
-* Connections for a specific manager
-* Connections for a specific resource
-* Existing redirect state
-* Prior manager configuration
-* Current deployment metadata
+- Existing manager resources
+- Existing connections
+- Connections for a specific manager
+- Connections for a specific resource
+- Existing redirect state
+- Prior manager configuration
+- Current deployment metadata
 
 Use the actual available RPC contract.
 
@@ -1053,8 +1082,8 @@ A manager must only access connection data that it is authorized to retrieve.
 
 Connection access should be limited to connections where:
 
-* The connection is owned by the calling manager, or
-* The associated resource is owned by the calling manager
+- The connection is owned by the calling manager, or
+- The associated resource is owned by the calling manager
 
 Follow the Deploy Commander interface and RPC authorization model.
 
@@ -1066,19 +1095,19 @@ Manager implementation code should return errors through the manager framework.
 
 Do not:
 
-* Panic for configuration errors
-* Call `os.Exit`
-* Call `log.Fatal`
-* Ignore failed RPC calls
-* Continue after required resource resolution fails
-* Emit partially valid runner metadata as though generation succeeded
+- Panic for configuration errors
+- Call `os.Exit`
+- Call `log.Fatal`
+- Ignore failed RPC calls
+- Continue after required resource resolution fails
+- Emit partially valid runner metadata as though generation succeeded
 
 Errors should identify:
 
-* The input or configuration field
-* The service or resource involved
-* The failed operation
-* The underlying error where useful
+- The input or configuration field
+- The service or resource involved
+- The failed operation
+- The underlying error where useful
 
 Use `%w` in Go when preserving the original error.
 
@@ -1088,22 +1117,22 @@ Validate generated metadata before returning it.
 
 At minimum, check:
 
-* Required images are non-empty
-* Service keys are non-empty
-* Dependencies reference included services
-* No dependency cycles exist
-* Volume names are non-empty
-* Mount paths are absolute
-* Mount paths are unique within each service
-* Resource names are non-empty
-* Resource types are non-empty
-* Port values are valid
-* Host IP values are valid IP addresses
-* Platform connections contain required platform data
-* Removal entries are non-empty
-* A service is not both created and removed
-* A volume is not both created and removed
-* Connection removals contain the required IDs
+- Required images are non-empty
+- Service keys are non-empty
+- Dependencies reference included services
+- No dependency cycles exist
+- Volume names are non-empty
+- Mount paths are absolute
+- Mount paths are unique within each service
+- Resource names are non-empty
+- Resource types are non-empty
+- Port values are valid
+- Host IP values are valid IP addresses
+- Platform connections contain required platform data
+- Removal entries are non-empty
+- A service is not both created and removed
+- A volume is not both created and removed
+- Connection removals contain the required IDs
 
 Do not rely exclusively on the runner to reject easily detectable manager-generation mistakes.
 
@@ -1121,10 +1150,10 @@ json.Marshal(...)
 
 Use `json.RawMessage` for arbitrary JSON fields such as:
 
-* Resource metadata
-* Connection metadata
-* Platform connection data
-* Platform data
+- Resource metadata
+- Connection metadata
+- Platform connection data
+- Platform data
 
 Ensure every `json.RawMessage` contains valid JSON.
 
@@ -1162,9 +1191,7 @@ Do not use an empty byte slice as valid metadata.
 
 ```json
 {
-  "volumes": [
-    "app-data"
-  ],
+  "volumes": ["app-data"],
   "services": {
     "app": {
       "image": "example/app:1.0.0",
@@ -1193,9 +1220,7 @@ Do not use an empty byte slice as valid metadata.
     },
     "app": {
       "image": "example/app:1.0.0",
-      "depends_on": [
-        "migrate"
-      ]
+      "depends_on": ["migrate"]
     }
   }
 }
@@ -1208,9 +1233,7 @@ Do not use an empty byte slice as valid metadata.
   "services": {
     "proxy": {
       "image": "example/proxy:1.0.0",
-      "network_groups": [
-        "frontend"
-      ],
+      "network_groups": ["frontend"],
       "bindings": [
         {
           "container_port": 80,
@@ -1220,22 +1243,13 @@ Do not use an empty byte slice as valid metadata.
     },
     "app": {
       "image": "example/app:1.0.0",
-      "network_groups": [
-        "frontend",
-        "backend"
-      ],
-      "aliases": [
-        "app"
-      ]
+      "network_groups": ["frontend", "backend"],
+      "aliases": ["app"]
     },
     "database": {
       "image": "postgres:18",
-      "network_groups": [
-        "backend"
-      ],
-      "aliases": [
-        "database"
-      ]
+      "network_groups": ["backend"],
+      "aliases": ["database"]
     }
   }
 }
@@ -1245,9 +1259,7 @@ Do not use an empty byte slice as valid metadata.
 
 ```json
 {
-  "volumes": [
-    "database-data"
-  ],
+  "volumes": ["database-data"],
   "services": {
     "database": {
       "image": "postgres:18",
@@ -1305,13 +1317,8 @@ Do not construct it manually.
 
 ```json
 {
-  "remove_services": [
-    "old-worker",
-    "old-proxy"
-  ],
-  "remove_volumes": [
-    "temporary-cache"
-  ]
+  "remove_services": ["old-worker", "old-proxy"],
+  "remove_volumes": ["temporary-cache"]
 }
 ```
 
@@ -1343,14 +1350,14 @@ When asked to implement a manager using this runner, follow this sequence.
 
 Identify:
 
-* Manager entry point
-* Input models
-* Configuration models
-* Available RPC calls
-* Current metadata generation code
-* Existing tests
-* Local `AGENTS.md` instructions
-* Expected response or return type
+- Manager entry point
+- Input models
+- Configuration models
+- Available RPC calls
+- Current metadata generation code
+- Existing tests
+- Local `AGENTS.md` instructions
+- Expected response or return type
 
 Do not begin by creating a new architecture when an established manager pattern exists.
 
@@ -1358,15 +1365,15 @@ Do not begin by creating a new architecture when an established manager pattern 
 
 Document internally:
 
-* Services the manager owns
-* Runner steps required
-* Persistent volumes required
-* Resources produced
-* Resources consumed
-* Connections created
-* Connections removed
-* Redirect behavior
-* Teardown behavior
+- Services the manager owns
+- Runner steps required
+- Persistent volumes required
+- Resources produced
+- Resources consumed
+- Connections created
+- Connections removed
+- Redirect behavior
+- Teardown behavior
 
 Keep this aligned with the actual user request.
 
@@ -1376,10 +1383,10 @@ Do not add speculative services or infrastructure.
 
 Use available RPC calls to retrieve:
 
-* Required resources
-* Resource connections
-* Existing connections
-* Existing manager state
+- Required resources
+- Resource connections
+- Existing connections
+- Existing manager state
 
 Validate ownership and availability.
 
@@ -1387,9 +1394,11 @@ Return a clear error when required state cannot be resolved.
 
 ### 4. Build Shared Models
 
-Construct `models.Metadata` and its nested shared models directly.
+If the manager project imports the runner's shared models, construct `models.Metadata` and its nested models directly.
 
-Do not create a parallel metadata schema unless required for manager-local input parsing.
+If those shared models are unavailable, define manager-side transport types that reproduce the documented JSON contract exactly. Keep these transport types at the manager-to-runner boundary so they cannot drift into a competing domain model.
+
+Do not add fields merely because an underlying container platform supports them.
 
 Convert manager-local configuration into runner models at a clear boundary.
 
@@ -1407,17 +1416,21 @@ Do not write `/run/config.json` directly unless the manager framework explicitly
 
 ### 7. Add Tests
 
+Do not assume the runner's tests establish conventions for the manager project. Follow the manager repository's existing test conventions while testing the runner contract described here.
+
 Test:
 
-* Minimal setup
-* Full setup
-* Missing required input
-* Invalid resource resolution
-* Existing connection behavior
-* Update removals
-* Redirect set and clear
-* Teardown behavior
-* JSON serialization
+- Minimal setup
+- Full setup
+- Missing required input
+- Invalid resource resolution
+- Existing connection behavior
+- Update removals
+- Redirect set and clear
+- Teardown behavior
+- JSON serialization
+- Omission versus explicit empty values for pointer-backed fields
+- Rejection of requested features that the runner contract does not support
 
 Use deterministic UUIDs and values in unit tests.
 
@@ -1425,10 +1438,10 @@ Use deterministic UUIDs and values in unit tests.
 
 Update the manager’s:
 
-* `README.md`
-* `AGENTS.md`
-* Configuration examples
-* Input documentation
+- `README.md`
+- `AGENTS.md`
+- Configuration examples
+- Input documentation
 
 Do not update the runner documentation for manager-specific behavior.
 
@@ -1436,44 +1449,44 @@ Do not update the runner documentation for manager-specific behavior.
 
 When implementing code that targets this runner:
 
-* Use the shared runner models.
-* Preserve JSON field names.
-* Preserve nil semantics.
-* Keep service keys stable.
-* Keep resource names stable.
-* Resolve platform connection data from actual connections.
-* Do not construct external network names.
-* Declare new volumes explicitly.
-* Remove services and volumes explicitly.
-* Treat volume removal as destructive.
-* Use runner roles only for one-time work.
-* Return errors instead of terminating.
-* Do not log secrets.
-* Do not invent unsupported runner behavior.
-* Do not silently modify the runner.
-* Do not move manager files or package responsibilities without explicitly calling out the structural change.
-* Make the smallest coherent implementation that satisfies the manager’s requirements.
+- Use the shared runner models.
+- Preserve JSON field names.
+- Preserve nil semantics.
+- Keep service keys stable.
+- Keep resource names stable.
+- Resolve platform connection data from actual connections.
+- Do not construct external network names.
+- Declare new volumes explicitly.
+- Remove services and volumes explicitly.
+- Treat volume removal as destructive.
+- Use runner roles only for one-time work.
+- Return errors instead of terminating.
+- Do not log secrets.
+- Do not invent unsupported runner behavior.
+- Do not silently modify the runner.
+- Do not move manager files or package responsibilities without explicitly calling out the structural change.
+- Make the smallest coherent implementation that satisfies the manager’s requirements.
 
 ## Unsupported Assumptions
 
 Do not assume the runner currently provides:
 
-* Kubernetes support
-* Service readiness checks
-* Automatic removal of omitted services
-* Automatic removal of omitted volumes
-* Autoscaling
-* Protocol-specific port bindings
-* Static container IP assignment
-* Service/name resource reference resolution
-* Resource-only connection deletion
-* Transactional rollback
-* Secret management
-* Automatic environment generation from connection metadata
-* Automatic image pulling policy configuration
-* Health checks
-* CPU or memory limits
-* Host-path mounts
+- Kubernetes support
+- Service readiness checks
+- Automatic removal of omitted services
+- Automatic removal of omitted volumes
+- Autoscaling
+- Protocol-specific port bindings
+- Static container IP assignment
+- Service/name resource reference resolution
+- Resource-only connection deletion
+- Transactional rollback
+- Secret management
+- Automatic environment generation from connection metadata
+- Automatic image pulling policy configuration
+- Health checks
+- CPU or memory limits
+- Host-path mounts
 
 These require explicit runner changes before manager code may depend on them.
 
@@ -1481,23 +1494,24 @@ These require explicit runner changes before manager code may depend on them.
 
 Before declaring the manager implementation complete, verify:
 
-* The manager returns valid runner metadata.
-* All service images are defined.
-* Service keys are stable.
-* Dependencies exist and are acyclic.
-* Required volumes are declared.
-* Mount paths are absolute.
-* Produced resources have stable names and types.
-* Consumed Docker platform connections use exact resolved network names.
-* Removal operations are explicit.
-* Connection operations use UUID-based resource references.
-* Redirect nil semantics are correct.
-* No unsupported runner feature is assumed.
-* Errors are returned with useful context.
-* Secrets are not logged.
-* Tests cover setup, update, and failure paths.
-* Documentation reflects the implementation.
-* The project passes formatting, tests, vetting, and build checks.
+- The manager returns valid runner metadata.
+- All service images are defined.
+- Service keys are stable.
+- Dependencies exist and are acyclic.
+- Required volumes are declared.
+- Mount paths are absolute.
+- Produced resources have stable names and types.
+- Consumed Docker platform connections use exact resolved network names.
+- Removal operations are explicit.
+- Connection operations use UUID-based resource references.
+- Redirect nil semantics are correct.
+- Any service command is a non-empty explicit string array; empty arrays are invalid for Docker, and no shell splitting or entrypoint override is assumed.
+- No unsupported runner feature is assumed.
+- Errors are returned with useful context.
+- Secrets are not logged.
+- Tests cover setup, update, and failure paths.
+- Documentation reflects the implementation.
+- The project passes formatting, tests, vetting, and build checks.
 
 ## Core Principle
 
