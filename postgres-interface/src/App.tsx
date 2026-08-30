@@ -124,9 +124,9 @@ export default function App({ createClient = productionClient }: AppProps) {
       }
 
       // Reconcile installation and teardown state before rendering controls.
-      await recoverInstallationOnBoot({ caller: client.caller, events: client.events, signal: controller.signal });
-      await recoverTeardownOnBoot({ caller: client.caller, events: client.events, signal: controller.signal, managerId: currentManager, storage: typeof window !== 'undefined' ? window.localStorage : undefined });
-      await recoverConnectionOnBoot(client, controller.signal);
+      const installRecovery = await recoverInstallationOnBoot({ caller: client.caller, events: client.events, signal: controller.signal });
+      const teardownRecovery = await recoverTeardownOnBoot({ caller: client.caller, events: client.events, signal: controller.signal, managerId: currentManager, storage: typeof window !== 'undefined' ? window.localStorage : undefined });
+      const connectionRecovery = await recoverConnectionOnBoot(client, controller.signal);
       const resource = await findPrimaryResource(client.caller);
       const primary = await readPrimaryState(client.caller);
       const resourceCount = await countPrimaryResources(client.caller);
@@ -136,7 +136,10 @@ export default function App({ createClient = productionClient }: AppProps) {
         resource,
         primary,
         ambiguous: resourceCount > 1,
-        error: resourceCount > 1 ? null : stateError(resource, primary),
+        error: resourceCount > 1 ? null
+          : installRecovery?.kind === 'busy' || teardownRecovery?.kind === 'busy' || connectionRecovery?.kind === 'busy'
+            ? 'A PostgreSQL operation is already in progress'
+            : stateError(resource, primary),
       };
     };
 

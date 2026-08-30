@@ -14,6 +14,7 @@ import {
 import {
   acquireOperation,
   deleteOperation,
+  OperationBusyError,
   readOperation,
   transitionOperation,
   type TeardownOperation,
@@ -96,6 +97,8 @@ export async function installPostgres(deps: InstallationWorkflowDeps): Promise<v
   throwIfAborted(deps.signal);
   const existingResource = await findPrimaryResource(deps.caller);
   const existingState = await readPrimaryState(deps.caller);
+  const existingOperation = await readOperation(deps.caller);
+  if (existingOperation) throw new OperationBusyError();
   if (existingResource) throw new Error('PostgreSQL installation already exists; teardown is required');
   if (existingState) throw new Error('PostgreSQL installation requires recovery');
 
@@ -201,16 +204,18 @@ export async function teardownPostgres(
   } catch (error) {
     if (isRecord(error) && error.name === 'AbortError') throw error;
     if (isRecord(error) && error.status === RUN_FAILED && state) {
-      await transitionPrimaryState(deps.caller, state.operationId, 'teardown-running', 'teardown-failed').catch(() => undefined);
+      await transitionPrimaryState(deps.caller, state.operationId, 'teardown-running', {
+        phase: 'teardown-failed', runId: null, resourceId: state.resourceId, initializedAt: state.initializedAt,
+      }).catch(() => undefined);
       await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required').catch(() => undefined);
       await deleteOperation(deps.caller, operation.operationId).catch(() => undefined);
     }
     throw new Error(TEARDOWN_ERROR);
   }
 
-  await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
   if (state) await deletePrimaryState(deps.caller, state.operationId);
   if (deps.storage && deps.managerId) clearPermission(deps.storage, deps.managerId, expectedResource.id);
+  await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
   await deleteOperation(deps.caller, operation.operationId);
 }
 
@@ -285,20 +290,14 @@ export async function recoverTeardownOnBoot(
     }
   }
   if (operation.phase === 'teardown-release-required') {
-    // The teardown runner has already reached a terminal state. Complete the
-    // deferred state cleanup before releasing the journal lock; a crash in
-    // this window must not leave administrator state stranded.
-    if (state?.phase === 'teardown-running') {
-      await deletePrimaryState(deps.caller, state.operationId);
-      if (storage && managerId) clearPermission(storage, managerId, state.resourceId ?? operation.resourceId);
-    }
-    await deleteOperation(deps.caller, operation.operationId).catch(() => undefined);
+    // Terminal cleanup has already completed before this phase is written.
+    // Only release the journal; never reinterpret the outcome or delete state.
+    await deleteOperation(deps.caller, operation.operationId);
     return { kind: 'retry' };
   }
   if (!runId) return { kind: 'busy' };
   const status = await exactStatus(deps.caller, runId);
   if (status === 0 || status === 1) return { kind: 'busy' };
-  await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
   if (status === RUN_FAILED) {
     if (state?.phase === 'teardown-running') await transitionPrimaryState(deps.caller, state.operationId, 'teardown-running', {
       phase: 'teardown-failed', runId: null, resourceId: state.resourceId, initializedAt: state.initializedAt,
@@ -307,6 +306,7 @@ export async function recoverTeardownOnBoot(
     await deletePrimaryState(deps.caller, state.operationId);
     if (storage && managerId) clearPermission(storage, managerId, state.resourceId ?? operation.resourceId);
   }
+  await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
   await deleteOperation(deps.caller, operation.operationId);
   return { kind: 'retry' };
 }

@@ -299,9 +299,9 @@ export async function recoverProvisioning(
       }
       return { kind: 'connection', value: existing };
     }
-    if (operation.phase === 'provision-running' || operation.phase === 'provision-starting') {
-      return { kind: 'busy' };
-    }
+    // A differing connection does not belong to this journal. Continue
+    // through the journal's exact run/correlation recovery instead of
+    // leaving the operation permanently busy.
   }
 
   if (operation.phase === 'prepared') {

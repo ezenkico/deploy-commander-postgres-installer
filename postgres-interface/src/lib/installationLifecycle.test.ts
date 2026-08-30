@@ -17,6 +17,7 @@ function deps(overrides: Partial<InstallationWorkflowDeps> = {}): InstallationWo
     getRun: vi.fn().mockResolvedValue({ run: { id: 'run-1', status: 2 } }),
     getRuns: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
     databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
+      if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [] }] };
       if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
       return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
     }),
@@ -36,6 +37,7 @@ describe('installPostgres', () => {
       ...(deps().caller as unknown as Record<string, unknown>),
       getMyResources: vi.fn().mockResolvedValue({ items: [resource], limit: 50, offset: 0, total: 1 }),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
+        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [] }] };
         if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
         return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
       }),
@@ -50,6 +52,7 @@ describe('installPostgres', () => {
         .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
         .mockResolvedValueOnce({ items: [resource], limit: 50, offset: 0, total: 1 }),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
+        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [] }] };
         if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
         return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
       }),

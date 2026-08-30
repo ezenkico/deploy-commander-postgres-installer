@@ -41,7 +41,7 @@ export default function ManagerDashboard({
 }: ManagerDashboardProps) {
   const ready = isReady(resource, primary);
   const legacy = resource !== null && primary === null;
-  const recovery = resourceAmbiguous || (!ready && !legacy && (resource !== null || primary !== null));
+  const recovery = Boolean(error) || resourceAmbiguous || (!ready && !legacy && (resource !== null || primary !== null));
 
   let content;
   if (resourceAmbiguous) {
