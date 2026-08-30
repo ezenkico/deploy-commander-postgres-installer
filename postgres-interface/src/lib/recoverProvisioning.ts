@@ -229,15 +229,10 @@ async function cleanupRun(
     }
   }
 
-  let status: number;
-  try {
-    status = await monitoredStatus(deps, cleanupRunId);
-  } catch (error) {
-    // A transport/database/monitoring error does not prove that the cleanup
-    // run failed. Keep cleanup-running and its exact run id so a retry can
-    // resume monitoring instead of launching a second cleanup runner.
-    throw error;
-  }
+  // A transport/database/monitoring error does not prove that the cleanup
+  // run failed. Keep cleanup-running and its exact run id so a retry can
+  // resume monitoring instead of launching a second cleanup runner.
+  const status = await monitoredStatus(deps, cleanupRunId);
   if (status === STATUS_FAILED) {
     try {
       await transitionOperation(deps.caller, operation.operationId, 'cleanup-running', {

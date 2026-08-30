@@ -335,7 +335,6 @@ describe('createPostgresConnection successful orchestration', () => {
     const controller = new AbortController();
     const d = deps({ signal: controller.signal });
     const originalTransition = d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>;
-    let mutationCount = 0;
     originalTransition.mockImplementation((query: string, bindings: Record<string, unknown>) => {
       if (query.startsWith('SELECT phase')) return Promise.resolve({ results: [{ statement: 0, result: [{
         phase: primary.phase, operation_id: primary.operationId,
