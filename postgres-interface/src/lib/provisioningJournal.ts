@@ -89,6 +89,22 @@ const CLEANUP_REASONS: readonly CleanupReason[] = [
   'abandoned',
 ];
 
+const OPERATION_RECORD_KEYS = new Set([
+  'kind',
+  'operation_id',
+  'caller_id',
+  'resource_id',
+  'database',
+  'username',
+  'phase',
+  'cleanup_reason',
+  'provision_run_id',
+  'cleanup_run_id',
+  'teardown_run_id',
+  'created_at',
+  'updated_at',
+]);
+
 const LEGAL_TRANSITIONS: Readonly<Record<OperationPhase, readonly OperationPhase[]>> = {
   prepared: ['provision-starting'],
   'provision-starting': ['provision-running'],
@@ -176,6 +192,10 @@ function hasForbiddenField(value: unknown): boolean {
   return Object.entries(value).some(([key, child]) => /password|secret/i.test(key) || hasForbiddenField(child));
 }
 
+function hasUnexpectedRecordField(value: UnknownRecord): boolean {
+  return Object.keys(value).some((key) => !OPERATION_RECORD_KEYS.has(key));
+}
+
 function assertOperationId(operationId: unknown): asserts operationId is string {
   if (!isNonBlankString(operationId)) throw new Error('Invalid PostgreSQL operation');
 }
@@ -224,7 +244,8 @@ function assertOperation(operation: unknown): asserts operation is OperationReco
 function parseStoredOperation(value: unknown): OperationRecord | null {
   if (!Array.isArray(value)) throw new Error('Invalid PostgreSQL operation result');
   if (value.length === 0) return null;
-  if (value.length !== 1 || !isRecord(value[0]) || hasForbiddenField(value[0])) {
+  if (value.length !== 1 || !isRecord(value[0])
+    || hasForbiddenField(value[0]) || hasUnexpectedRecordField(value[0])) {
     throw new Error('Invalid PostgreSQL operation result');
   }
 
@@ -406,6 +427,39 @@ function transitionValues(next: OperationPhase | OperationTransition): Operation
   return values;
 }
 
+function assertTransitionFieldCompatibility(
+  expectedPhase: OperationPhase,
+  next: OperationTransition,
+): void {
+  const teardown = TEARDOWN_PHASES.includes(expectedPhase) || TEARDOWN_PHASES.includes(next.phase);
+  if (teardown) {
+    if (next.cleanupReason !== undefined
+      || next.provisionRunId !== undefined
+      || next.cleanupRunId !== undefined) {
+      throw new Error('Invalid PostgreSQL operation transition');
+    }
+    return;
+  }
+
+  if (next.teardownRunId !== undefined) {
+    throw new Error('Invalid PostgreSQL operation transition');
+  }
+
+  const provisionPhase = (phase: OperationPhase) => phase === 'provision-starting'
+    || phase === 'provision-running' || phase === 'provisioned';
+  if (next.provisionRunId !== undefined
+    && !provisionPhase(expectedPhase) && !provisionPhase(next.phase)) {
+    throw new Error('Invalid PostgreSQL operation transition');
+  }
+
+  const cleanupPhase = (phase: OperationPhase) => phase === 'cleanup-required'
+    || phase === 'cleanup-starting' || phase === 'cleanup-running';
+  if (next.cleanupRunId !== undefined
+    && !cleanupPhase(expectedPhase) && !cleanupPhase(next.phase)) {
+    throw new Error('Invalid PostgreSQL operation transition');
+  }
+}
+
 export async function transitionOperation(
   caller: RPCCaller,
   operationId: string,
@@ -418,6 +472,7 @@ export async function transitionOperation(
   if (!LEGAL_TRANSITIONS[expectedPhase].includes(values.phase)) {
     throw new Error('Invalid PostgreSQL operation transition');
   }
+  assertTransitionFieldCompatibility(expectedPhase, values);
 
   const set: string[] = ['phase = $next_phase'];
   const bindings: Record<string, unknown> = {

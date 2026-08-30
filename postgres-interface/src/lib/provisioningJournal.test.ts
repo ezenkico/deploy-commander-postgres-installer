@@ -106,6 +106,16 @@ describe('provisioning journal', () => {
       created_at: connection.createdAt, updated_at: connection.updatedAt,
     }]);
     await expect(readOperation(malformed)).rejects.toThrow('Invalid PostgreSQL operation result');
+
+    const unexpected = callerWithQuery([{
+      kind: 'connection', operation_id: 'operation-1', caller_id: 'caller-1',
+      resource_id: 'resource-1', database: 'db_abc', username: 'pg_user_abc',
+      phase: 'prepared', cleanup_reason: null,
+      provision_run_id: null, cleanup_run_id: null,
+      created_at: connection.createdAt, updated_at: connection.updatedAt,
+      unexpected: 'must not be normalized',
+    }]);
+    await expect(readOperation(unexpected)).rejects.toThrow('Invalid PostgreSQL operation result');
   });
 
   it('uses an operation-and-phase compare-and-set for legal transitions', async () => {
@@ -134,6 +144,29 @@ describe('provisioning journal', () => {
     const lost = callerWithQuery([]);
     await expect(transitionOperation(lost, 'operation-1', 'prepared', 'provision-starting'))
       .rejects.toThrow('PostgreSQL operation ownership was lost');
+  });
+
+  it('rejects transition fields from the other operation kind before querying', async () => {
+    const caller = callerWithQuery(['operation-1']);
+
+    await expect(transitionOperation(caller, 'operation-1', 'teardown-starting', {
+      phase: 'teardown-running',
+      cleanupReason: 'abandoned',
+    })).rejects.toThrow('Invalid PostgreSQL operation transition');
+    await expect(transitionOperation(caller, 'operation-1', 'teardown-starting', {
+      phase: 'teardown-running',
+      provisionRunId: 'run-1',
+    })).rejects.toThrow('Invalid PostgreSQL operation transition');
+    await expect(transitionOperation(caller, 'operation-1', 'teardown-starting', {
+      phase: 'teardown-running',
+      cleanupRunId: 'run-1',
+    })).rejects.toThrow('Invalid PostgreSQL operation transition');
+
+    await expect(transitionOperation(caller, 'operation-1', 'prepared', {
+      phase: 'provision-starting',
+      teardownRunId: 'run-1',
+    })).rejects.toThrow('Invalid PostgreSQL operation transition');
+    expect(caller.databaseQuery).not.toHaveBeenCalled();
   });
 
   it('conditionally deletes the fixed lock and supports the complete legal transition graph', async () => {
