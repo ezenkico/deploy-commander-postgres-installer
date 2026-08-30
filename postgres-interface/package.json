@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ezenki/deploy-commander-installer-interface": "file:../../deploy-commander-installer-interface",
+    "@ezenki/deploy-commander-installer-interface": "^0.3.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
