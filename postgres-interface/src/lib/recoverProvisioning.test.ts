@@ -139,6 +139,23 @@ describe('recoverProvisioning', () => {
     expect(d.caller.start).not.toHaveBeenCalled();
   });
 
+  it('does not return a connection owned by a different calling manager', async () => {
+    const full = { connection: {
+      id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
+      external: false, created_at: 'now', updated_at: 'now',
+    }, config: { id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
+      metadata: { database: operation.database, username: operation.username } } };
+    const d = deps({
+      requestedCallerId: 'manager-other',
+      caller: {
+        ...(deps().caller as unknown as Record<string, unknown>),
+        getConnections: vi.fn().mockResolvedValue({ items: [full.connection], limit: 50, offset: 0, total: 1 }),
+        getConnection: vi.fn().mockResolvedValue(full),
+      } as unknown as RPCCaller,
+    });
+    await expect(recoverProvisioning(d, operation)).resolves.toEqual({ kind: 'busy' });
+  });
+
   it('retains a journal when the existing connection has different logical identifiers', async () => {
     const full = { connection: {
       id: 'connection-other', manager: operation.callerId, resource: operation.resourceId,

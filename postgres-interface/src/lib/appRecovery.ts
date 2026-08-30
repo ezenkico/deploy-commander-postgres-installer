@@ -16,7 +16,7 @@ function isReadyPrimary(value: Awaited<ReturnType<typeof readPrimaryState>>): va
 }
 
 /** Boot call site used by the production App before rendering new work. */
-export async function recoverConnectionOnBoot(client: AppClient, signal = new AbortController().signal): Promise<ProvisioningRecoveryResult | null> {
+export async function recoverConnectionOnBoot(client: AppClient, signal = new AbortController().signal, requestedCallerId?: string): Promise<ProvisioningRecoveryResult | null> {
   const operation = await readOperation(client.caller);
   if (operation === null) return null;
   if (operation.kind !== 'connection') return { kind: 'busy' };
@@ -43,5 +43,6 @@ export async function recoverConnectionOnBoot(client: AppClient, signal = new Ab
     signal,
     primary,
     platform,
+    requestedCallerId,
   });
 }

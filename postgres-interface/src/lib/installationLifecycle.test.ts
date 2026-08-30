@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RPCCaller, RPC } from '@ezenki/deploy-commander-installer-interface';
-import { installPostgres, teardownPostgres, type InstallationWorkflowDeps } from './installationLifecycle';
+import { installPostgres, recoverInstallationOnBoot, recoverTeardownOnBoot, teardownPostgres, type InstallationWorkflowDeps } from './installationLifecycle';
 import { createRunEventSource } from './runMonitor';
 
 const resource: RPC.ResourceItem = { id: 'resource-1', type: 'postgres', name: 'postgres', external: false, created_at: 'now', updated_at: 'now' };
@@ -95,5 +95,37 @@ describe('teardownPostgres', () => {
     } as unknown as RPCCaller, waitForRun: vi.fn().mockRejectedValue(new Error('temporary')) });
     await expect(teardownPostgres(d, resource)).rejects.toThrow('teardown');
     expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([, b]) => (b as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
+  });
+});
+
+describe('lifecycle boot recovery', () => {
+  it('reconciles an install-prepared state by exact note instead of leaving the app permanently busy', async () => {
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
+        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [{
+          phase: 'install-prepared', operation_id: 'install-1', admin_username: 'pg_admin_0123456789abcdef0123456789abcdef', admin_password: 'secret', run_id: null, resource_id: null, initialized_at: null, updated_at: 'now',
+        }] }] };
+        return { results: [{ statement: 0, result: [bindings.operation_id ?? 'install-1'] }] };
+      }),
+      getRuns: vi.fn().mockResolvedValue({ items: [{ id: 'install-run', action: 'create', note: 'postgres-install:install-1' }], limit: 50, offset: 0, total: 1 }),
+      getRun: vi.fn().mockResolvedValue({ run: { id: 'install-run', status: 1 } }),
+    } as unknown as RPCCaller });
+    await expect(recoverInstallationOnBoot(d)).resolves.toEqual({ kind: 'busy' });
+    expect(d.caller.getRuns).toHaveBeenCalled();
+  });
+
+  it('releases a teardown journal after a terminal run without starting another teardown', async () => {
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
+        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-running', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }] }] };
+        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primaryRow] }] };
+        return { results: [{ statement: 0, result: [bindings.operation_id ?? 'tear-1'] }] };
+      }),
+      getRun: vi.fn().mockResolvedValue({ run: { id: 'tear-run', status: 2 } }),
+    } as unknown as RPCCaller });
+    await expect(recoverTeardownOnBoot(d)).resolves.toEqual({ kind: 'retry' });
+    expect(d.caller.start).not.toHaveBeenCalled();
   });
 });

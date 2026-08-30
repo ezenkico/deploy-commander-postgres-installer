@@ -19,6 +19,9 @@ const STATUS_FAILED = 3;
 export interface ProvisioningRecoveryDeps extends Pick<ConnectionWorkflowDeps, 'caller' | 'events' | 'waitForRun' | 'signal'> {
   primary: ReadyPrimaryState;
   platform: PlatformConnection;
+  /** The active child request, when any. A journal owned by another caller
+   * may be recovered but its connection must never be returned to this one. */
+  requestedCallerId?: string;
 }
 
 export type ProvisioningRecoveryResult =
@@ -291,6 +294,9 @@ export async function recoverProvisioning(
     // recovery instead of deleting another operation's journal.
     if (connectionBelongsToOperation(existing, operation)) {
       await clearLock(deps, operation);
+      if (deps.requestedCallerId !== undefined && deps.requestedCallerId !== operation.callerId) {
+        return { kind: 'busy' };
+      }
       return { kind: 'connection', value: existing };
     }
     if (operation.phase === 'provision-running' || operation.phase === 'provision-starting') {
@@ -336,6 +342,9 @@ export async function recoverProvisioning(
         const raced = await findExistingConnection(deps.caller, operation.callerId, operation.resourceId);
         if (raced && connectionBelongsToOperation(raced, operation)) {
           await clearLock(deps, operation);
+          if (deps.requestedCallerId !== undefined && deps.requestedCallerId !== operation.callerId) {
+            return { kind: 'busy' };
+          }
           return { kind: 'connection', value: raced };
         }
       } catch { throw recoveryError(); }

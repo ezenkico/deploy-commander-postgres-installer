@@ -14,6 +14,7 @@ import {
 import {
   acquireOperation,
   deleteOperation,
+  readOperation,
   transitionOperation,
   type TeardownOperation,
 } from './provisioningJournal';
@@ -211,4 +212,92 @@ export async function teardownPostgres(
   if (state) await deletePrimaryState(deps.caller, state.operationId);
   if (deps.storage && deps.managerId) clearPermission(deps.storage, deps.managerId, expectedResource.id);
   await deleteOperation(deps.caller, operation.operationId);
+}
+
+export type LifecycleRecoveryResult = { kind: 'busy' | 'retry' };
+
+async function exactStatus(caller: RPCCaller, runId: string): Promise<number> {
+  let result: unknown;
+  try { result = await caller.getRun(runId); } catch { throw new Error('PostgreSQL lifecycle recovery is required'); }
+  if (!isRecord(result) || !isRecord(result.run) || result.run.id !== runId
+    || ![0, 1, 2, 3].includes(result.run.status as number)) {
+    throw new Error('PostgreSQL lifecycle recovery is required');
+  }
+  return result.run.status as number;
+}
+
+/** Reconcile a persisted installation state on manager boot. */
+export async function recoverInstallationOnBoot(
+  deps: InstallationWorkflowDeps,
+): Promise<LifecycleRecoveryResult | null> {
+  let state = await readPrimaryState(deps.caller);
+  if (!state) return null;
+  if (state.phase === 'install-prepared') {
+    const match = await findCorrelatedRun(deps.caller, 'create', `postgres-install:${state.operationId}`);
+    if (match.kind === 'ambiguous') return { kind: 'busy' };
+    if (match.kind === 'absent') {
+      await deletePrimaryState(deps.caller, state.operationId);
+      return { kind: 'retry' };
+    }
+    await transitionPrimaryState(deps.caller, state.operationId, 'install-prepared', { phase: 'install-running', runId: match.id });
+    state = { ...state, phase: 'install-running', runId: match.id };
+  }
+  if (state.phase === 'install-running') {
+    if (!state.runId) throw new Error('PostgreSQL lifecycle recovery is required');
+    const status = await exactStatus(deps.caller, state.runId);
+    if (status === 0 || status === 1) return { kind: 'busy' };
+    if (status === RUN_FAILED) {
+      await transitionPrimaryState(deps.caller, state.operationId, 'install-running', 'install-failed');
+      return { kind: 'retry' };
+    }
+    const resource = await findPrimaryResource(deps.caller);
+    if (!resource) return { kind: 'busy' };
+    await transitionPrimaryState(deps.caller, state.operationId, 'install-running', {
+      phase: 'ready', runId: state.runId, resourceId: resource.id, initializedAt: new Date().toISOString(),
+    });
+    return { kind: 'retry' };
+  }
+  return null;
+}
+
+/** Reconcile the manager-wide teardown journal without launching a second run. */
+export async function recoverTeardownOnBoot(
+  deps: InstallationWorkflowDeps,
+  managerId = deps.managerId,
+  storage = deps.storage,
+): Promise<LifecycleRecoveryResult | null> {
+  const operation = await readOperation(deps.caller);
+  if (!operation || operation.kind !== 'teardown') return null;
+  const state = await readPrimaryState(deps.caller);
+  let runId = operation.teardownRunId;
+  if (operation.phase === 'teardown-starting' && !runId) {
+    const match = await findCorrelatedRun(deps.caller, 'teardown', `postgres-teardown:${operation.operationId}`);
+    if (match.kind === 'ambiguous') return { kind: 'busy' };
+    if (match.kind === 'absent') {
+      await transitionOperation(deps.caller, operation.operationId, 'teardown-starting', 'teardown-release-required').catch(() => undefined);
+      await deleteOperation(deps.caller, operation.operationId).catch(() => undefined);
+      return { kind: 'retry' };
+    }
+    runId = match.id;
+    await transitionOperation(deps.caller, operation.operationId, 'teardown-starting', { phase: 'teardown-running', teardownRunId: runId });
+    if (state && (state.phase === 'ready' || state.phase === 'teardown-failed')) {
+      await transitionPrimaryState(deps.caller, state.operationId, state.phase, { phase: 'teardown-running', resourceId: state.resourceId, initializedAt: state.initializedAt, runId: null });
+    }
+  }
+  if (operation.phase === 'teardown-release-required') {
+    await deleteOperation(deps.caller, operation.operationId).catch(() => undefined);
+    return { kind: 'retry' };
+  }
+  if (!runId) return { kind: 'busy' };
+  const status = await exactStatus(deps.caller, runId);
+  if (status === 0 || status === 1) return { kind: 'busy' };
+  await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
+  if (status === RUN_FAILED) {
+    if (state?.phase === 'teardown-running') await transitionPrimaryState(deps.caller, state.operationId, 'teardown-running', 'teardown-failed');
+  } else if (state) {
+    await deletePrimaryState(deps.caller, state.operationId);
+    if (storage && managerId) clearPermission(storage, managerId, state.resourceId ?? operation.resourceId);
+  }
+  await deleteOperation(deps.caller, operation.operationId);
+  return { kind: 'retry' };
 }

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { RPC, type Events } from '@ezenki/deploy-commander-installer-interface';
-import Install from './components/Install';
-import Teardown from './components/Teardown';
+import ManagerDashboard from './components/ManagerDashboard';
 import ConnectionRequest from './components/ConnectionRequest';
 import { createInterfaceClient } from './lib/interfaceClient';
 import { createRunEventSource } from './lib/runMonitor';
@@ -10,6 +9,8 @@ import { findPrimaryResource, readPrimaryState, type PrimaryState } from './lib/
 import { isCreateConnectionMetadata } from './lib/postgresContracts';
 import { recoverConnectionOnBoot, type AppClient } from './lib/appRecovery';
 import type { ReadyPrimaryState } from './lib/createPostgresConnection';
+import { installPostgres, recoverInstallationOnBoot, recoverTeardownOnBoot, teardownPostgres } from './lib/installationLifecycle';
+import { clearPermission, isPermissionRemembered } from './lib/permissionPreference';
 
 export type AppClientFactory = (onEvent: (event: Events.InterfaceEvent) => void) => AppClient;
 
@@ -76,6 +77,9 @@ export default function App({ createClient = productionClient }: AppProps) {
   const [loading, setLoading] = useState(true);
   const [manager, setManager] = useState<string | null>(null);
   const [view, setView] = useState<BootView | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const clientRef = useRef<AppClient | null>(null);
 
   useEffect(() => {
@@ -98,7 +102,7 @@ export default function App({ createClient = productionClient }: AppProps) {
 
         try {
           // Reconcile persisted operations before exposing a connection request.
-          const recovery = await recoverConnectionOnBoot(client, controller.signal);
+          const recovery = await recoverConnectionOnBoot(client, controller.signal, callingManager);
           const resource = await findPrimaryResource(client.caller);
           const primary = await readPrimaryState(client.caller);
           const resourceCount = await countPrimaryResources(client.caller);
@@ -119,9 +123,10 @@ export default function App({ createClient = productionClient }: AppProps) {
         }
       }
 
-      // Reconcile the manager-wide journal before rendering normal controls.
-      const recovery = await recoverConnectionOnBoot(client, controller.signal);
-      if (recovery?.kind === 'busy') throw new Error('A PostgreSQL operation is already in progress');
+      // Reconcile installation and teardown state before rendering controls.
+      await recoverInstallationOnBoot({ caller: client.caller, events: client.events, signal: controller.signal });
+      await recoverTeardownOnBoot({ caller: client.caller, events: client.events, signal: controller.signal, managerId: currentManager, storage: typeof window !== 'undefined' ? window.localStorage : undefined });
+      await recoverConnectionOnBoot(client, controller.signal);
       const resource = await findPrimaryResource(client.caller);
       const primary = await readPrimaryState(client.caller);
       const resourceCount = await countPrimaryResources(client.caller);
@@ -155,7 +160,7 @@ export default function App({ createClient = productionClient }: AppProps) {
       client.wire.end();
       if (clientRef.current === client) clientRef.current = null;
     };
-  }, [createClient]);
+  }, [createClient, refreshKey]);
 
   if (loading || view === null) return <div role="status">Loading</div>;
   if (view.kind === 'error') return <div role="alert">{view.message}</div>;
@@ -164,11 +169,26 @@ export default function App({ createClient = productionClient }: AppProps) {
   }
   if (view.ambiguous) return <div role="alert">PostgreSQL resource state is ambiguous; teardown and reinstall are required.</div>;
   if (view.error) return <div role="alert">{view.error}</div>;
-  const installed = view.resource !== null && isReadyPrimary(view.primary, view.resource);
-  const legacy = view.resource !== null && view.primary === null;
   const appClient = clientRef.current!;
-  return <main className="p-6 text-xl font-semibold" data-installed={installed ? 'true' : 'false'}>
-    {legacy && <p role="alert">This PostgreSQL installation predates private administrator state. Teardown and reinstall are required.</p>}
-    {installed ? <Teardown caller={appClient.caller} events={appClient.events} resource={view.resource!} managerId={manager ?? undefined} storage={typeof window !== 'undefined' ? window.localStorage : undefined} /> : <Install caller={appClient.caller} events={appClient.events} />}
-  </main>;
+  const storage = typeof window !== 'undefined' ? window.localStorage : undefined;
+  const permissionRemembered = Boolean(manager && view.resource && storage && isPermissionRemembered(storage, manager, view.resource.id));
+  const runAction = async (action: () => Promise<void>) => {
+    if (actionBusy) return;
+    setActionBusy(true); setActionError(null);
+    try { await action(); setRefreshKey((value) => value + 1); }
+    catch (error) { setActionError(error instanceof Error && error.message.includes('recovery') ? 'PostgreSQL recovery is required' : 'Unable to complete PostgreSQL lifecycle action'); }
+    finally { setActionBusy(false); }
+  };
+  return <ManagerDashboard
+    resource={view.resource}
+    primary={view.primary}
+    busy={actionBusy}
+    error={actionError ?? view.error}
+    permissionRemembered={permissionRemembered}
+    resourceAmbiguous={view.ambiguous}
+    onInstall={() => { void runAction(() => installPostgres({ caller: appClient.caller, events: appClient.events, signal: new AbortController().signal })); }}
+    onTeardown={() => { if (!view.resource) return; void runAction(() => teardownPostgres({ caller: appClient.caller, events: appClient.events, signal: new AbortController().signal, managerId: manager ?? undefined, storage }, view.resource!)); }}
+    onRetry={() => setRefreshKey((value) => value + 1)}
+    onResetPermission={() => { if (manager && view.resource && storage) { clearPermission(storage, manager, view.resource.id); setRefreshKey((value) => value + 1); } }}
+  />;
 }
