@@ -167,8 +167,6 @@ export default function App({ createClient = productionClient }: AppProps) {
   if (view.kind === 'connection') {
     return <ConnectionRequest caller={clientRef.current?.caller} events={clientRef.current?.events} wire={clientRef.current?.wire} currentManagerId={manager ?? ''} callingManagerId={view.callerId} resource={view.resource} primary={view.primary} initialError={view.error} initialResult={view.result} />;
   }
-  if (view.ambiguous) return <div role="alert">PostgreSQL resource state is ambiguous; teardown and reinstall are required.</div>;
-  if (view.error) return <div role="alert">{view.error}</div>;
   const appClient = clientRef.current!;
   const storage = typeof window !== 'undefined' ? window.localStorage : undefined;
   const permissionRemembered = Boolean(manager && view.resource && storage && isPermissionRemembered(storage, manager, view.resource.id));

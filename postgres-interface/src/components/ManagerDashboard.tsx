@@ -46,8 +46,8 @@ export default function ManagerDashboard({
   let content;
   if (resourceAmbiguous) {
     content = (
-      <section className="rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
-        <h2 className="text-xl font-semibold text-slate-900">PostgreSQL requires recovery</h2>
+      <section role="alert" className="rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
+        <h2 className="text-xl font-semibold text-slate-900">PostgreSQL resource state is ambiguous</h2>
         <p className="mt-3 text-sm text-rose-700">Multiple PostgreSQL resources were found. Teardown and reinstall are required.</p>
         <button type="button" disabled={busy} onClick={onRetry} className={`${buttonClass('secondary')} mt-6`}>Retry recovery</button>
       </section>

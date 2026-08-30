@@ -285,6 +285,13 @@ export async function recoverTeardownOnBoot(
     }
   }
   if (operation.phase === 'teardown-release-required') {
+    // The teardown runner has already reached a terminal state. Complete the
+    // deferred state cleanup before releasing the journal lock; a crash in
+    // this window must not leave administrator state stranded.
+    if (state?.phase === 'teardown-running') {
+      await deletePrimaryState(deps.caller, state.operationId);
+      if (storage && managerId) clearPermission(storage, managerId, state.resourceId ?? operation.resourceId);
+    }
     await deleteOperation(deps.caller, operation.operationId).catch(() => undefined);
     return { kind: 'retry' };
   }
@@ -293,7 +300,9 @@ export async function recoverTeardownOnBoot(
   if (status === 0 || status === 1) return { kind: 'busy' };
   await transitionOperation(deps.caller, operation.operationId, 'teardown-running', 'teardown-release-required');
   if (status === RUN_FAILED) {
-    if (state?.phase === 'teardown-running') await transitionPrimaryState(deps.caller, state.operationId, 'teardown-running', 'teardown-failed');
+    if (state?.phase === 'teardown-running') await transitionPrimaryState(deps.caller, state.operationId, 'teardown-running', {
+      phase: 'teardown-failed', runId: null, resourceId: state.resourceId, initializedAt: state.initializedAt,
+    });
   } else if (state) {
     await deletePrimaryState(deps.caller, state.operationId);
     if (storage && managerId) clearPermission(storage, managerId, state.resourceId ?? operation.resourceId);
