@@ -158,10 +158,11 @@ interface PostgresConnectionMetadata {
   database: string;
   username: string;
   password: string;
+  platform_connection: PlatformConnection;
 }
 ```
 
-Do not add an unconfirmed TLS field. The stable alias is the hostname and the resource association provides the platform relationship. Administrator credentials never appear in this object.
+Do not add an unconfirmed TLS field. The stable alias is the hostname. The resource association authorizes the platform relationship, while the connection metadata's resolved `platform_connection` provides the concrete runner input required to attach a consuming service to the resource network. Administrator credentials never appear in this object.
 
 After `createConnection` succeeds, close with the exact returned `{ connection, config }` result:
 
