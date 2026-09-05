@@ -29,6 +29,27 @@ The manager defines intent.
 
 The runner performs the platform-specific execution.
 
+## Manager and Runner Responsibility Split
+
+In this guide, the **manager** is the manager-side planner that produces the deployment metadata. The **runner** is the process that receives that metadata and applies it to Docker.
+
+The boundary is deliberate: the manager must provide a complete, explicit execution plan, while the runner handles the Docker and agent operations needed to apply that plan. Manager code should not create Docker objects or reproduce runner naming formulas.
+
+| Concern                             | The manager must provide                                                                                                                       | The runner handles for the manager                                                                                                               |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Desired state                       | The services, one-time steps, volumes, resources, connections, removals, and redirect operation required for this run                          | Applying only the supplied operations in lifecycle order; it does not invent missing deployment intent                                           |
+| Service identity and configuration  | Stable service keys, images, optional commands, roles, dependencies, environment, aliases, bindings, mounts, and network-group membership      | Validating supported metadata, ordering dependencies, and creating or replacing manager-scoped containers                                        |
+| Volumes                             | Logical volume declarations, service mount paths, and explicit removal decisions                                                               | Generating manager-scoped Docker names, creating or reusing named volumes, mounting them, and removing requested or teardown-owned volumes       |
+| Manager-local networking            | Logical network-group membership; no Docker network names                                                                                      | Creating manager-scoped group networks, creating the default manager network when needed, and attaching containers                               |
+| Produced resources                  | Stable resource type and name, resource metadata, and any valid public connection                                                              | Creating the resource network, attaching the producer, generating Docker platform-connection data, and publishing the resource through the agent |
+| Consumed resources                  | An authorized, resolved `ResourceConnection` for each consuming service, plus any application configuration derived from the resource contract | Decoding Docker `Platform` connection data, verifying the named network exists, and attaching the consuming container to that exact network      |
+| Deploy Commander connection changes | Explicit create/remove operations with the currently supported UUID references                                                                 | Sending those operations to the Deploy Commander agent after service and removal operations                                                      |
+| Removals                            | Exact obsolete service and volume logical names; omission is not removal                                                                       | Resolving manager-scoped Docker objects, removing only the requested objects, and cleaning up resources recorded on removed services             |
+| Redirect                            | Whether to leave it unchanged, set it, or clear it, preserving nil semantics                                                                   | Sending the requested redirect update to the agent                                                                                               |
+| Full teardown                       | The `teardown` action for the target manager                                                                                                   | Discovering objects by manager ownership labels and removing containers, volumes, and networks in safe order                                     |
+
+The runner does not query manager or commander state to decide what should be deployed. It also does not derive application credentials, translate address-based connections into environment variables, infer removals from omitted entries, or validate that a supplied external Docker network semantically belongs to a particular resource. Those planning and resolution decisions remain manager responsibilities.
+
 ## Required Reading
 
 Before implementing a manager with this runner, read:
@@ -103,6 +124,8 @@ type Configuration struct {
 The manager implementation may only be responsible for generating `metadata`, depending on how Deploy Commander launches and wraps the runner.
 
 Follow the surrounding manager framework rather than duplicating fields already supplied by Deploy Commander.
+
+Before populating the top-level fields, determine which component owns them. Commonly, the surrounding Deploy Commander framework supplies execution-envelope fields such as `manager`, `run`, `runner`, `platform`, and `action`, while manager planning code supplies `metadata`. The manager must not replace authoritative framework values with locally generated identifiers.
 
 ## Supported Platform
 
@@ -657,12 +680,27 @@ type CreateResourceSpec struct {
 }
 ```
 
+### What the manager must provide
+
+The manager must place the resource specification on the producing service and provide:
+
+- A stable, non-empty resource type
+- A stable, non-empty resource name
+- Resource metadata needed by authorized consumers
+- A public connection only when the resource is externally reachable
+
+The manager should also give the producing service any Docker alias that consumers are expected to use as a hostname. The runner applies declared aliases, but it does not invent a resource hostname.
+
+Do not add Docker platform-connection data to `CreateResourceSpec`. The manager declares the resource; it does not calculate or create the resource's Docker network.
+
+### What the runner handles
+
 For a normal Docker service, the runner:
 
 1. Creates a dedicated Docker resource network.
 2. Attaches the producing service to the network.
-3. Publishes the resource to the agent.
-4. Adds Docker platform connection data containing the network name.
+3. Generates Docker platform connection data containing the exact network name.
+4. Publishes the resource and generated platform connection through the agent.
 
 Use stable resource names.
 
@@ -746,24 +784,31 @@ Example service:
 }
 ```
 
-For Docker, the runner:
+### What the manager must provide
+
+The manager must:
+
+1. Obtain a resource connection the manager is authorized to consume from the authoritative manager or commander interface, or from framework-supplied state.
+2. Select the resolved connection appropriate for the active platform.
+3. Place the complete `ResourceConnection`, including its exact type and data, in the consuming service's `connections` array.
+4. Translate resource metadata, public connection data, credentials, or address-based connection data into the consuming application's configuration when its resource contract requires that translation.
+
+For a Docker `Platform` connection, the `data` object must contain a non-empty string field named `network`. Use the network name exactly as returned by the resolved resource connection.
+
+The manager must not provide a resource name, service name, manager ID, container name, or URL in place of the Docker network name. It must not prefix the value with the consuming manager ID, reconstruct it from a resource name, create the network itself, or substitute a network-group name.
+
+### What the runner handles
+
+For each Docker `Platform` connection on a service, the runner:
 
 1. Decodes the platform connection data.
 2. Verifies that the named Docker network exists.
-3. Attaches the service to that network.
+3. Includes that exact network in the container's Docker endpoint configuration.
+4. Attaches the service when it creates the container.
 
-Use the network name exactly as returned by the resource connection.
+The runner execution for the resource-producing manager creates and owns the resource network. The producing manager supplies the resource declaration; the consuming manager supplies the resolved connection returned for that resource. Neither manager implementation should create the Docker network directly.
 
-The `data` object must contain a non-empty string field named `network`. The runner does not accept a resource name, service name, manager ID, container name, or URL in place of this Docker network name.
-
-Do not:
-
-- Prefix it with the current manager ID
-- Reconstruct it from a resource name
-- Create it yourself
-- Substitute a network group name
-
-The resource-owning manager is responsible for creating that network.
+The runner verifies only that the supplied network exists. It trusts the resolved platform data and does not independently prove that the network belongs to the intended resource, so the manager must obtain the connection from an authoritative, authorized source.
 
 ## Network Connections
 
@@ -787,9 +832,18 @@ Do not assume the Docker runner automatically converts network connections into 
 
 The manager implementation must translate usable connection details into the service’s configuration.
 
+The runner currently skips a `Network` connection when assembling Docker network endpoints. Supplying only an address-based `Network` connection will not attach the container to a Docker network.
+
 ## Creating Deploy Commander Connections
 
 Connection creation plans are separate from service connection attachment.
+
+This distinction is critical:
+
+- `services.<service>.connections` tells the runner which already-resolved platform networks the service must join during container creation.
+- Top-level `metadata.connections.create` tells the runner to create a Deploy Commander connection record through the agent.
+
+The runner applies service setup before the top-level connection plan. Creating a connection record in the same runner configuration does not resolve it into a service connection or retroactively attach an already-created container. The manager must supply the resolved connection separately in the consuming service's `connections` array when attachment is required in that run.
 
 Example:
 
@@ -1263,6 +1317,7 @@ Do not use an empty byte slice as valid metadata.
   "services": {
     "database": {
       "image": "postgres:18",
+      "aliases": ["database"],
       "environment": {
         "POSTGRES_DB": "app"
       },
@@ -1277,7 +1332,8 @@ Do not use an empty byte slice as valid metadata.
           "resource_type": "postgres",
           "name": "primary-database",
           "metadata": {
-            "database": "app"
+            "database": "app",
+            "host": "database"
           }
         }
       ]
@@ -1285,6 +1341,8 @@ Do not use an empty byte slice as valid metadata.
   }
 }
 ```
+
+Here the manager provides the stable resource declaration and the `database` alias. The runner creates the resource network, attaches the producer, and publishes the runner-generated Docker platform connection.
 
 ## Example: Consuming a Docker Resource
 
@@ -1312,6 +1370,8 @@ Do not use an empty byte slice as valid metadata.
 The network value must come from the resolved resource connection.
 
 Do not construct it manually.
+
+The `DATABASE_HOST` value is application configuration supplied by the consuming manager from the resource contract. The runner attaches the container to the resolved network, but it does not derive or inject that hostname.
 
 ## Example: Removing Obsolete State
 
@@ -1379,6 +1439,8 @@ Keep this aligned with the actual user request.
 
 Do not add speculative services or infrastructure.
 
+At this stage, decide **what** the deployment requires. Do not calculate Docker container, volume, or network names; those are runner implementation details.
+
 ### 3. Resolve External State
 
 Use available RPC calls to retrieve:
@@ -1391,6 +1453,8 @@ Use available RPC calls to retrieve:
 Validate ownership and availability.
 
 Return a clear error when required state cannot be resolved.
+
+For every consumed resource, retain the authoritative connection type and payload needed by the service. Do not expect a top-level connection-creation request to become a resolved service connection automatically.
 
 ### 4. Build Shared Models
 
@@ -1456,6 +1520,9 @@ When implementing code that targets this runner:
 - Keep resource names stable.
 - Resolve platform connection data from actual connections.
 - Do not construct external network names.
+- Do not create Docker containers, volumes, or networks from manager planning code.
+- Do not reproduce runner-owned Docker naming formulas in the manager.
+- Provide application-level hostnames, credentials, and connection settings when the resource contract requires them; the runner does not synthesize them.
 - Declare new volumes explicitly.
 - Remove services and volumes explicitly.
 - Treat volume removal as destructive.
@@ -1502,6 +1569,9 @@ Before declaring the manager implementation complete, verify:
 - Mount paths are absolute.
 - Produced resources have stable names and types.
 - Consumed Docker platform connections use exact resolved network names.
+- Every service that needs a Docker resource network contains the resolved `Platform` connection in its own `connections` array.
+- Top-level connection plans are not being mistaken for service network attachments.
+- Manager code does not create Docker objects or calculate runner-owned Docker names.
 - Removal operations are explicit.
 - Connection operations use UUID-based resource references.
 - Redirect nil semantics are correct.
