@@ -8,7 +8,7 @@ import { createRunEventSource } from './lib/runMonitor';
 import { findPrimaryResource, readPrimaryState, type PrimaryState } from './lib/primaryState';
 import { isCreateConnectionMetadata } from './lib/postgresContracts';
 import { recoverConnectionOnBoot, type AppClient } from './lib/appRecovery';
-import type { ReadyPrimaryState } from './lib/createPostgresConnection';
+import type { ReadyPrimaryState } from './lib/primaryState';
 import { installPostgres, recoverInstallationOnBoot, recoverTeardownOnBoot, teardownPostgres } from './lib/installationLifecycle';
 import { clearPermission, isPermissionRemembered } from './lib/permissionPreference';
 

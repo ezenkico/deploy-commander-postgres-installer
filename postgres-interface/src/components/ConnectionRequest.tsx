@@ -3,7 +3,8 @@ import type { RPC, RPCCaller, Wire } from '@ezenki/deploy-commander-installer-in
 import PermissionDialog from './PermissionDialog';
 import { generateConnectionCredentials } from '../lib/credentials';
 import { parsePlatformConnection } from '../lib/postgresContracts';
-import { createPostgresConnection, type PermissionDecision, type ReadyPrimaryState } from '../lib/createPostgresConnection';
+import { createPostgresConnection, type PermissionDecision } from '../lib/createPostgresConnection';
+import type { ReadyPrimaryState } from '../lib/primaryState';
 import type { RunEventSource } from '../lib/runMonitor';
 import { waitForRun } from '../lib/runMonitor';
 import { OperationBusyError } from '../lib/provisioningJournal';

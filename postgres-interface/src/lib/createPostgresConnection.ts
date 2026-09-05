@@ -10,15 +10,11 @@ import {
   type OperationRecord,
 } from './provisioningJournal';
 import { parsePlatformConnection, type PlatformConnection } from './postgresContracts';
-import type { PrimaryState } from './primaryState';
-import { findPrimaryResource, readPrimaryState } from './primaryState';
+import { PostgresRecoveryRequiredError } from './postgresErrors';
+import { findExistingConnection, normalizePostgresConnection } from './postgresConnectionContract';
+import { findPrimaryResource, readPrimaryState, type PrimaryState, type ReadyPrimaryState } from './primaryState';
 import type { RunEventSource, WaitOptions } from './runMonitor';
 import { findCorrelatedRun } from './recoverProvisioning';
-
-export type ReadyPrimaryState = PrimaryState & {
-  phase: 'ready';
-  resourceId: string;
-};
 
 export interface ConnectionRequest {
   currentManagerId: string;
@@ -48,7 +44,6 @@ export interface ConnectionWorkflowDeps {
   signal: AbortSignal;
 }
 
-const PAGE_LIMIT = 50;
 const RUNNER_IMAGE = 'ezenki/deploy-commander-runner:latest';
 const START_ERROR = 'Unable to start PostgreSQL provisioning';
 const RUN_ERROR = 'PostgreSQL provisioning failed';
@@ -69,10 +64,6 @@ function isValidTimestamp(value: unknown): value is string {
   return isNonBlank(value) && Number.isFinite(Date.parse(value));
 }
 
-function invalidConnection(): Error {
-  return new Error('Invalid PostgreSQL connection response');
-}
-
 function assertRequest(request: ConnectionRequest): PlatformConnection {
   if (!isNonBlank(request.currentManagerId) || !isNonBlank(request.callingManagerId)) {
     throw new Error('A calling manager is required');
@@ -84,7 +75,7 @@ function assertRequest(request: ConnectionRequest): PlatformConnection {
     || request.resource.type !== 'postgres'
     || request.resource.name !== 'postgres'
     || request.resource.external !== false) {
-    throw new Error('Invalid PostgreSQL resource');
+    throw new PostgresRecoveryRequiredError();
   }
   if (!isRecord(request.primary)
     || request.primary.phase !== 'ready'
@@ -97,9 +88,13 @@ function assertRequest(request: ConnectionRequest): PlatformConnection {
     || !isNonBlank(request.primary.resourceId)
     || request.primary.resourceId !== request.resource.id
     || !isValidTimestamp(request.primary.updatedAt)) {
-    throw new Error('Invalid ready PostgreSQL state');
+    throw new PostgresRecoveryRequiredError();
   }
-  return parsePlatformConnection(request.platform);
+  try {
+    return parsePlatformConnection(request.platform);
+  } catch {
+    throw new PostgresRecoveryRequiredError();
+  }
 }
 
 function abortError(): Error {
@@ -122,59 +117,6 @@ function operationId(): string {
     return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
   }
   throw new Error('Secure operation identifiers are unavailable');
-}
-
-function validateSummary(value: unknown, callingManagerId: string, resourceId: string): value is RPC.ConnectionItem {
-  return isRecord(value)
-    && isNonBlank(value.id)
-    && isNonBlank(value.manager)
-    && isNonBlank(value.resource)
-    && value.manager === callingManagerId
-    && value.resource === resourceId
-    && value.external === false
-    && isNonBlank(value.created_at)
-    && isNonBlank(value.updated_at);
-}
-
-function validatePage(value: unknown, expectedOffset: number): { items: RPC.ConnectionItem[]; limit: number; offset: number; total: number } {
-  if (!isRecord(value) || !Array.isArray(value.items) || !value.items.every((item) => isRecord(item))) {
-    throw invalidConnection();
-  }
-  if (typeof value.limit !== 'number' || !Number.isSafeInteger(value.limit) || value.limit <= 0
-    || typeof value.offset !== 'number' || !Number.isSafeInteger(value.offset) || value.offset < 0
-    || typeof value.total !== 'number' || !Number.isSafeInteger(value.total) || value.total < 0) {
-    throw invalidConnection();
-  }
-  const total = value.total;
-  const offset = value.offset;
-  if (offset !== expectedOffset
-    || value.items.length === 0 && total > 0
-    || value.items.length > value.limit
-    || value.items.length > total
-    || offset > total
-    || offset + value.items.length > total
-    || value.items.length < value.limit && offset + value.items.length < total) {
-    throw invalidConnection();
-  }
-  return {
-    items: value.items as unknown as RPC.ConnectionItem[],
-    limit: value.limit,
-    offset: value.offset,
-    total: value.total,
-  };
-}
-
-function validateFullConnection(value: unknown, summary: RPC.ConnectionItem, callingManagerId: string, resourceId: string): RPC.CreateConnection {
-  if (!isRecord(value) || !isRecord(value.connection) || !isRecord(value.config)
-    || !validateSummary(value.connection, callingManagerId, resourceId)) {
-    throw invalidConnection();
-  }
-  const config = value.config;
-  if (!isNonBlank(config.id) || !isNonBlank(config.manager) || !isNonBlank(config.resource)
-    || config.id !== summary.id || config.manager !== callingManagerId || config.resource !== resourceId) {
-    throw invalidConnection();
-  }
-  return value as unknown as RPC.CreateConnection;
 }
 
 function connectionBelongsToOperation(value: RPC.CreateConnection, operation: ConnectionOperation): boolean {
@@ -202,70 +144,37 @@ async function revalidateInstallation(
     primary = await readPrimaryState(caller);
     resource = await findPrimaryResource(caller);
   } catch {
-    throw new Error('Invalid ready PostgreSQL state');
+    throw new PostgresRecoveryRequiredError();
   }
   if (primary === null || primary.phase !== 'ready'
     || !resource || resource.id !== expected.resource.id
     || primary.resourceId !== resource.id) {
-    throw new Error('Invalid ready PostgreSQL state');
+    throw new PostgresRecoveryRequiredError();
   }
 
   let details: unknown;
   try {
     details = await caller.getResource(resource.id);
   } catch {
-    throw new Error('Invalid ready PostgreSQL state');
+    throw new PostgresRecoveryRequiredError();
   }
   if (!isRecord(details) || !isRecord(details.config)
     || !Object.prototype.hasOwnProperty.call(details.config, 'platform_connection')) {
-    throw new Error('Invalid ready PostgreSQL state');
+    throw new PostgresRecoveryRequiredError();
   }
   let platform: PlatformConnection;
   try {
     platform = parsePlatformConnection(details.config.platform_connection);
   } catch {
-    throw new Error('Invalid ready PostgreSQL state');
+    throw new PostgresRecoveryRequiredError();
   }
   if (!isNonBlank(primary.operationId) || !isNonBlank(primary.runId)
     || !isNonBlank(primary.initializedAt) || !isNonBlank(primary.resourceId)
     || !isNonBlank(primary.updatedAt) || !isNonBlank(primary.credentials.username)
     || !isNonBlank(primary.credentials.password)) {
-    throw new Error('Invalid ready PostgreSQL state');
+    throw new PostgresRecoveryRequiredError();
   }
   return { primary: primary as ReadyPrimaryState, resource, platform };
-}
-
-/** Find and validate the caller-owned, non-external connection for a resource. */
-export async function findExistingConnection(
-  caller: RPCCaller,
-  callingManagerId: string,
-  resourceId: string,
-): Promise<RPC.CreateConnection | null> {
-  if (!isNonBlank(callingManagerId) || !isNonBlank(resourceId)) throw invalidConnection();
-  let offset = 0;
-  let found: RPC.CreateConnection | null = null;
-  while (true) {
-    let response: unknown;
-    try {
-      response = await caller.getConnections(PAGE_LIMIT, offset, callingManagerId, resourceId);
-    } catch {
-      throw new Error('PostgreSQL connection lookup failed');
-    }
-    const page = validatePage(response, offset);
-    for (const summary of page.items) {
-      if (!validateSummary(summary, callingManagerId, resourceId)) throw invalidConnection();
-      let full: unknown;
-      try {
-        full = await caller.getConnection(summary.id);
-      } catch {
-        throw new Error('PostgreSQL connection lookup failed');
-      }
-      if (found !== null) throw invalidConnection();
-      found = validateFullConnection(full, summary, callingManagerId, resourceId);
-    }
-    if (page.items.length === 0 || offset + page.items.length >= page.total) return found;
-    offset += page.limit;
-  }
 }
 
 function makeOperation(request: ConnectionRequest, credentials: LogicalCredentials): ConnectionOperation {
@@ -378,7 +287,9 @@ export async function createPostgresConnection(
   const platform = assertRequest(request);
   throwIfAborted(deps.signal);
 
-  const existing = await findExistingConnection(deps.caller, request.callingManagerId, request.resource.id);
+  const existing = await findExistingConnection(
+    deps.caller, request.callingManagerId, request.resource.id, platform,
+  );
   if (existing) return existing;
   throwIfAborted(deps.signal);
 
@@ -493,7 +404,9 @@ export async function createPostgresConnection(
 
   await transitionOperation(deps.caller, operation.operationId, 'provisioned', 'persisting');
   await transitionOperation(deps.caller, operation.operationId, 'persisting', 'reconciliation-required');
-  const raced = await findExistingConnection(deps.caller, request.callingManagerId, request.resource.id);
+  const raced = await findExistingConnection(
+    deps.caller, request.callingManagerId, request.resource.id, revalidatedInstallation.platform,
+  );
   if (raced) {
     await transitionOperation(deps.caller, operation.operationId, 'reconciliation-required', {
       phase: 'cleanup-required', cleanupReason: 'duplicate-race',
@@ -509,7 +422,7 @@ export async function createPostgresConnection(
   let created: RPC.CreateConnection;
   try {
     created = await deps.caller.createConnection(
-      buildConnectionMetadata(credentials),
+      buildConnectionMetadata(credentials, revalidatedInstallation.platform),
       request.callingManagerId,
       false,
       request.resource.id,
@@ -519,7 +432,9 @@ export async function createPostgresConnection(
     // compensating; a failed lookup is never interpreted as absence.
     let reconciled: RPC.CreateConnection | null;
     try {
-      reconciled = await findExistingConnection(deps.caller, request.callingManagerId, request.resource.id);
+      reconciled = await findExistingConnection(
+        deps.caller, request.callingManagerId, request.resource.id, revalidatedInstallation.platform,
+      );
     } catch {
       throw new Error(PERSIST_ERROR);
     }
@@ -543,6 +458,10 @@ export async function createPostgresConnection(
     });
     throw new Error(PERSIST_ERROR);
   }
+  created = normalizePostgresConnection(created, {
+    managerId: request.callingManagerId,
+    resourceId: request.resource.id,
+  }, revalidatedInstallation.platform);
   try {
     await deleteOperation(deps.caller, operation.operationId);
   } catch {

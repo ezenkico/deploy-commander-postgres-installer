@@ -22,6 +22,11 @@ export interface PrimaryState {
   updatedAt: string;
 }
 
+export type ReadyPrimaryState = PrimaryState & {
+  phase: 'ready';
+  resourceId: string;
+};
+
 export interface PrimaryStateTransition {
   phase: PrimaryPhase;
   runId?: string | null;

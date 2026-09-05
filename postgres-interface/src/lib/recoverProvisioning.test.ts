@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RPCCaller } from '@ezenki/deploy-commander-installer-interface';
 import type { PlatformConnection } from './postgresContracts';
 import type { ConnectionOperation } from './provisioningJournal';
-import type { ReadyPrimaryState } from './createPostgresConnection';
+import type { ReadyPrimaryState } from './primaryState';
 import { recoverJournalOperation, recoverProvisioning, type ProvisioningRecoveryDeps } from './recoverProvisioning';
 
 const primary: ReadyPrimaryState = {
@@ -12,6 +12,7 @@ const primary: ReadyPrimaryState = {
   updatedAt: '2026-08-30T00:00:00.000Z',
 };
 const platform: PlatformConnection = { type: 'Platform', data: { network: 'postgres-network' } };
+const stalePlatform: PlatformConnection = { type: 'Platform', data: { network: 'stale-postgres-network' } };
 const operation: ConnectionOperation = {
   kind: 'connection', operationId: 'operation-1', callerId: 'manager-2', resourceId: 'resource-1',
   database: 'db_0123456789abcdef0123456789abcdef',
@@ -128,7 +129,8 @@ describe('recoverProvisioning', () => {
       id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
       external: false, created_at: 'now', updated_at: 'now',
     }, config: { id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
-      metadata: { database: operation.database, username: operation.username } } };
+      metadata: { host: 'postgres', port: 5432, database: operation.database, username: operation.username,
+        password: 'logical-password' } } };
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>),
       getConnections: vi.fn().mockResolvedValue({ items: [full.connection], limit: 50, offset: 0, total: 1 }),
@@ -144,7 +146,8 @@ describe('recoverProvisioning', () => {
       id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
       external: false, created_at: 'now', updated_at: 'now',
     }, config: { id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
-      metadata: { database: operation.database, username: operation.username } } };
+      metadata: { host: 'postgres', port: 5432, database: operation.database, username: operation.username,
+        password: 'logical-password' } } };
     const d = deps({
       requestedCallerId: 'manager-other',
       caller: {
@@ -156,12 +159,33 @@ describe('recoverProvisioning', () => {
     await expect(recoverProvisioning(d, operation)).resolves.toEqual({ kind: 'busy' });
   });
 
+  it('returns the authoritative platform and does not mutate stale persisted metadata', async () => {
+    const full = { connection: {
+      id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
+      external: false, created_at: 'now', updated_at: 'now',
+    }, config: { id: 'connection-1', manager: operation.callerId, resource: operation.resourceId,
+      metadata: { host: 'postgres', port: 5432, database: operation.database, username: operation.username,
+        password: 'logical-password', platform_connection: stalePlatform } } };
+    const d = deps({ caller: {
+      ...(deps().caller as unknown as Record<string, unknown>),
+      getConnections: vi.fn().mockResolvedValue({ items: [full.connection], limit: 50, offset: 0, total: 1 }),
+      getConnection: vi.fn().mockResolvedValue(full),
+    } as unknown as RPCCaller });
+
+    await expect(recoverProvisioning(d, operation)).resolves.toMatchObject({
+      kind: 'connection',
+      value: { config: { metadata: { database: operation.database, username: operation.username, platform_connection: platform } } },
+    });
+    expect(full.config.metadata.platform_connection).toEqual(stalePlatform);
+  });
+
   it('retains a journal when the existing connection has different logical identifiers', async () => {
     const full = { connection: {
       id: 'connection-other', manager: operation.callerId, resource: operation.resourceId,
       external: false, created_at: 'now', updated_at: 'now',
     }, config: { id: 'connection-other', manager: operation.callerId, resource: operation.resourceId,
-      metadata: { database: 'db_other', username: 'pg_user_other' } } };
+      metadata: { host: 'postgres', port: 5432, database: 'db_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', username: 'pg_user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        password: 'logical-password' } } };
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>),
       getConnections: vi.fn().mockResolvedValue({ items: [full.connection], limit: 50, offset: 0, total: 1 }),
@@ -198,11 +222,23 @@ describe('recoverProvisioning', () => {
       getConnection: vi.fn().mockResolvedValue({
       connection: existing,
       config: { id: existing.id, manager: existing.manager, resource: existing.resource,
-        metadata: { database: operation.database, username: operation.username } },
+        metadata: { host: 'postgres', port: 5432, database: operation.database, username: operation.username,
+          password: 'logical-password' } },
       }),
     } as unknown as RPCCaller });
     const reconciling = { ...operation, phase: 'reconciliation-required' as const };
-    await expect(recoverProvisioning(d, reconciling)).resolves.toEqual({ kind: 'connection', value: expect.anything() });
+    await expect(recoverProvisioning(d, reconciling)).resolves.toMatchObject({
+      kind: 'connection',
+      value: {
+        config: {
+          metadata: {
+            database: operation.database,
+            username: operation.username,
+            platform_connection: platform,
+          },
+        },
+      },
+    });
     expect(d.caller.start).not.toHaveBeenCalled();
   });
 
