@@ -16,7 +16,7 @@ Verification completed for the PostgreSQL platform-connection handoff branch. Un
 ## Dependency audit
 
 - `npm audit --omit=dev` — PASS, `found 0 vulnerabilities`.
-- `npm audit` — exits 1 with 7 development-tree advisories: 6 high and 1 low. The high advisories affect `brace-expansion`, `browserslist`, `esbuild`, `js-yaml`, `nanoid`, `postcss`, and `vite`; they remain recorded for a separate dependency clean-install/upgrade task. No `npm audit fix`, dependency-range change, or lockfile rewrite was performed.
+- `npm audit` — exits 1 with 7 development-tree advisories: 6 high and 1 low. The high advisories affect `brace-expansion`, `browserslist`, `js-yaml`, `nanoid`, `postcss`, and `vite`; the low advisory affects `esbuild`. They remain recorded for a separate dependency clean-install/upgrade task. No `npm audit fix`, dependency-range change, or lockfile rewrite was performed.
 - `npm ls vite postcss brace-expansion browserslist js-yaml nanoid esbuild` — exits 0. This worktree currently resolves Vite 7.3.3, PostCSS 8.5.15, esbuild 0.27.7, and the related transitive packages; no dependency files were modified. The preflight note about a restored-tree mismatch remains a separate follow-up because this command reflects the current installed tree only.
 
 ## Module boundary check
@@ -42,4 +42,3 @@ The diff from the approved plan baseline contains only connection-contract valid
 2. Reconcile the jCodeMunch dependency index and rerun the cycle check; verify the source-level import graph independently.
 3. Perform a dedicated dependency clean install and deliberate upgrade review for the seven development-tree advisories and any restored-tree mismatch.
 4. Run the PostgreSQL integration test with a suitable test container and administrator password in a controlled environment.
-
