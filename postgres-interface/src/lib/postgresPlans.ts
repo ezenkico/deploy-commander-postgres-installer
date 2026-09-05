@@ -184,13 +184,18 @@ export function buildCleanupPlan(
   });
 }
 
-export function buildConnectionMetadata(logical: LogicalCredentials): PostgresConnectionMetadata {
+export function buildConnectionMetadata(
+  logical: LogicalCredentials,
+  platform: PlatformConnection,
+): PostgresConnectionMetadata {
   validateLogical(logical);
+  const platformConnection = parsePlatformConnection(platform);
   return {
     host: 'postgres',
     port: 5432,
     database: logical.database,
     username: logical.username,
     password: logical.password,
+    platform_connection: platformConnection,
   };
 }
