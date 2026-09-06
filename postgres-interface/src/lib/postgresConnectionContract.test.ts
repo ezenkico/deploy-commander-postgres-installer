@@ -101,6 +101,34 @@ describe('normalizePostgresConnection', () => {
       platform,
     )).toThrow(PostgresRecoveryRequiredError);
   });
+
+  it.each([
+    ['configuration manager', {
+      ...full(logicalMetadata),
+      config: { ...full(logicalMetadata).config, manager: 'manager-other' },
+    }],
+    ['configuration resource', {
+      ...full(logicalMetadata),
+      config: { ...full(logicalMetadata).config, resource: 'resource-other' },
+    }],
+    ['external connection', {
+      ...full(logicalMetadata),
+      connection: { ...full(logicalMetadata).connection, external: true },
+    }],
+  ])('rejects a mismatched %s', (_field, value) => {
+    expect(() => normalizePostgresConnection(value, expected, platform))
+      .toThrow(PostgresRecoveryRequiredError);
+  });
+
+  it.each([null, undefined])(
+    'rejects a present invalid platform value %# instead of treating it as legacy',
+    (platformConnection) => {
+      expect(() => normalizePostgresConnection(full({
+        ...logicalMetadata,
+        platform_connection: platformConnection,
+      }), expected, platform)).toThrow(PostgresRecoveryRequiredError);
+    },
+  );
 });
 
 describe('findExistingConnection', () => {

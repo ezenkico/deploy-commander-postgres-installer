@@ -275,12 +275,14 @@ describe('createPostgresConnection successful orchestration', () => {
   });
 
   it('cleans up a provisioned database before returning a raced existing connection', async () => {
+    const racedDatabase = 'db_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const racedUsername = 'pg_user_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const existing = { id: 'connection-2', manager: 'manager-2', resource: 'resource-1', external: false, created_at: 'now', updated_at: 'now' };
     const getConnections = vi.fn()
       .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
       .mockResolvedValueOnce({ items: [existing], limit: 50, offset: 0, total: 1 });
     const full = { connection: existing, config: { id: existing.id, manager: existing.manager, resource: existing.resource,
-      metadata: { host: 'postgres', port: 5432, database: logical.database, username: logical.username, password: logical.password } } };
+      metadata: { host: 'postgres', port: 5432, database: racedDatabase, username: racedUsername, password: 'raced-password' } } };
     const start = vi.fn()
       .mockResolvedValueOnce({ id: 'provision-run', queued_at: 'now', status: 0 })
       .mockResolvedValueOnce({ id: 'cleanup-run', queued_at: 'now', status: 0 });
@@ -298,9 +300,19 @@ describe('createPostgresConnection successful orchestration', () => {
     } as unknown as RPCCaller, waitForRun });
     await expect(createPostgresConnection(d, request())).resolves.toMatchObject({
       connection: existing,
-      config: { metadata: { platform_connection: platform } },
+      config: { metadata: { database: racedDatabase, username: racedUsername, platform_connection: platform } },
     });
     expect(start).toHaveBeenNthCalledWith(2, 'cleanup-connection', 'ezenki/deploy-commander-runner:latest', expect.objectContaining({ services: expect.anything() }), expect.stringMatching(/^postgres-cleanup:/));
+    expect(start.mock.calls[1]?.[2]).toMatchObject({
+      services: {
+        'postgres-admin': {
+          environment: {
+            TARGET_DATABASE: logical.database,
+            TARGET_USERNAME: logical.username,
+          },
+        },
+      },
+    });
     expect(waitForRun).toHaveBeenCalledTimes(2);
     const queries = (d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([query]) => query as string);
     expect(queries.some((query) => query.includes('phase = $next_phase'))).toBe(true);
@@ -357,6 +369,44 @@ describe('createPostgresConnection successful orchestration', () => {
     } as unknown as RPCCaller });
     await expect(createPostgresConnection(d, request())).resolves.toMatchObject({ connection: existing });
     expect(d.caller.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves recovery classification when rejected persistence finds malformed committed metadata', async () => {
+    const existing = { id: 'connection-malformed', manager: 'manager-2', resource: 'resource-1', external: false,
+      created_at: 'now', updated_at: 'now' };
+    const base = deps();
+    const d = deps({ caller: {
+      ...(base.caller as unknown as Record<string, unknown>),
+      getConnections: vi.fn()
+        .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
+        .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
+        .mockResolvedValueOnce({ items: [existing], limit: 50, offset: 0, total: 1 }),
+      getConnection: vi.fn().mockResolvedValue({
+        connection: existing,
+        config: { id: existing.id, manager: existing.manager, resource: existing.resource, metadata: {} },
+      }),
+      createConnection: vi.fn().mockRejectedValue(new Error('ambiguous persistence failure')),
+    } as unknown as RPCCaller });
+
+    await expect(createPostgresConnection(d, request()))
+      .rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
+    expect(d.caller.start).toHaveBeenCalledTimes(1);
+    expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .some(([query]) => String(query).startsWith('DELETE postgres_operation'))).toBe(false);
+  });
+
+  it('retains the journal when a resolved persistence response is malformed', async () => {
+    const base = deps();
+    const d = deps({ caller: {
+      ...(base.caller as unknown as Record<string, unknown>),
+      createConnection: vi.fn().mockResolvedValue({ connection: { id: 'malformed' }, config: {} }),
+    } as unknown as RPCCaller });
+
+    await expect(createPostgresConnection(d, request()))
+      .rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
+    expect(d.caller.start).toHaveBeenCalledTimes(1);
+    expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .some(([query]) => String(query).startsWith('DELETE postgres_operation'))).toBe(false);
   });
 
   it('does not start after cancellation wins immediately before runner start and retains the starting journal', async () => {

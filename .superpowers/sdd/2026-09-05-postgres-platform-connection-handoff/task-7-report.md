@@ -2,7 +2,7 @@
 
 ## Status
 
-Verification completed for the PostgreSQL platform-connection handoff branch. Unit tests and the production build pass. Strict lint is not clean because of React ref-access diagnostics in existing UI code, and jCodeMunch retains one reported creation/recovery cycle that does not match the current source imports. No unrelated remediation was made.
+Verification completed on 2026-09-05 in the isolated PostgreSQL platform-connection handoff worktree using the dependency tree installed from that worktree's lockfile. Unit tests and the production build passed. Strict lint was not clean because of React ref-access diagnostics in existing UI code. No unrelated remediation was made. These results are an execution snapshot; later checks must report their own installed dependency tree rather than treating this report as a reproducibility guarantee.
 
 ## Verification
 
@@ -17,16 +17,16 @@ Verification completed for the PostgreSQL platform-connection handoff branch. Un
 
 - `npm audit --omit=dev` — PASS, `found 0 vulnerabilities`.
 - `npm audit` — exits 1 with 7 development-tree advisories: 6 high and 1 low. The high advisories affect `brace-expansion`, `browserslist`, `js-yaml`, `nanoid`, `postcss`, and `vite`; the low advisory affects `esbuild`. They remain recorded for a separate dependency clean-install/upgrade task. No `npm audit fix`, dependency-range change, or lockfile rewrite was performed.
-- `npm ls vite postcss brace-expansion browserslist js-yaml nanoid esbuild` — exits 0. This worktree currently resolves Vite 7.3.3, PostCSS 8.5.15, esbuild 0.27.7, and the related transitive packages; no dependency files were modified. The preflight note about a restored-tree mismatch remains a separate follow-up because this command reflects the current installed tree only.
+- `npm ls vite postcss brace-expansion browserslist js-yaml nanoid esbuild` — exited 0 in the isolated worktree. Its lockfile-installed tree resolved Vite 7.3.3, PostCSS 8.5.15, esbuild 0.27.7, and the related transitive packages; no dependency files were modified. This historical result does not describe another checkout whose installed tree differs from its lockfile.
 
 ## Module boundary check
 
-jCodeMunch actions were run as required:
+jCodeMunch actions were run as required during Task 7:
 
 - `register_edit` for the eight changed source files — registered 8 files and invalidated 109 symbols.
-- `get_dependency_cycles` — reports one cycle: `createPostgresConnection.ts` ↔ `recoverProvisioning.ts`.
+- `get_dependency_cycles` initially reported one cycle: `createPostgresConnection.ts` ↔ `recoverProvisioning.ts`.
 
-The current source has `createPostgresConnection.ts` importing `findCorrelatedRun` from `recoverProvisioning.ts`, while `recoverProvisioning.ts` imports the shared contract/plans/journal modules and has no import from `createPostgresConnection.ts`. Re-registering and directly indexing both files did not change the jCodeMunch result, so this is recorded as an index false-positive/staleness follow-up rather than a code change.
+The source has `createPostgresConnection.ts` importing `findCorrelatedRun` from `recoverProvisioning.ts`, while `recoverProvisioning.ts` imports the shared contract/plans/journal modules and has no reverse import. A fresh repository reindex on 2026-09-06 followed by `get_dependency_cycles` reported `cycle_count=0`, confirming the earlier result was stale index data.
 
 ## Integration coverage
 
@@ -39,6 +39,5 @@ The diff from the approved plan baseline contains only connection-contract valid
 ## Follow-ups
 
 1. Refactor or configure the React ref lifecycle code so strict ESLint can pass without weakening the lint policy.
-2. Reconcile the jCodeMunch dependency index and rerun the cycle check; verify the source-level import graph independently.
-3. Perform a dedicated dependency clean install and deliberate upgrade review for the seven development-tree advisories and any restored-tree mismatch.
-4. Run the PostgreSQL integration test with a suitable test container and administrator password in a controlled environment.
+2. Perform a dedicated dependency clean install and deliberate upgrade review for the seven development-tree advisories and any restored-tree mismatch.
+3. Run the PostgreSQL integration test with a suitable test container and administrator password in a controlled environment.
