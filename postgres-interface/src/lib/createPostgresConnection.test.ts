@@ -395,6 +395,27 @@ describe('createPostgresConnection successful orchestration', () => {
       .some(([query]) => String(query).startsWith('DELETE postgres_operation'))).toBe(false);
   });
 
+  it('keeps reconciliation transport failures fixed and non-secret while retaining the journal', async () => {
+    const base = deps();
+    const d = deps({ caller: {
+      ...(base.caller as unknown as Record<string, unknown>),
+      getConnections: vi.fn()
+        .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
+        .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
+        .mockRejectedValueOnce(new Error('transport leaked a database password')),
+      createConnection: vi.fn().mockRejectedValue(new Error('ambiguous persistence failure')),
+    } as unknown as RPCCaller });
+
+    const attempt = createPostgresConnection(d, request());
+    await expect(attempt).rejects.toMatchObject({
+      message: 'Unable to save the PostgreSQL connection',
+    });
+    await expect(attempt).rejects.not.toThrow(/password|transport/i);
+    expect(d.caller.start).toHaveBeenCalledTimes(1);
+    expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .some(([query]) => String(query).startsWith('DELETE postgres_operation'))).toBe(false);
+  });
+
   it('retains the journal when a resolved persistence response is malformed', async () => {
     const base = deps();
     const d = deps({ caller: {
