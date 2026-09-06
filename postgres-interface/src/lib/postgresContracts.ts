@@ -11,6 +11,7 @@ export interface PostgresConnectionMetadata {
   database: string;
   username: string;
   password: string;
+  platform_connection: PlatformConnection;
 }
 
 export interface RunnerService {

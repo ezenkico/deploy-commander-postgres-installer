@@ -1,5 +1,7 @@
 import type { RPCCaller, RPC } from '@ezenki/deploy-commander-installer-interface';
-import { findExistingConnection, type ConnectionWorkflowDeps, type ReadyPrimaryState } from './createPostgresConnection';
+import { findExistingConnection } from './postgresConnectionContract';
+import { PostgresRecoveryRequiredError } from './postgresErrors';
+import type { ReadyPrimaryState } from './primaryState';
 import { buildCleanupPlan } from './postgresPlans';
 import {
   deleteOperation,
@@ -8,6 +10,7 @@ import {
   type ConnectionOperation,
 } from './provisioningJournal';
 import type { PlatformConnection } from './postgresContracts';
+import type { RunEventSource, WaitOptions } from './runMonitor';
 
 const PAGE_LIMIT = 50;
 const RUNNER_IMAGE = 'ezenki/deploy-commander-runner:latest';
@@ -16,7 +19,16 @@ const STATUS_RUNNING = 1;
 const STATUS_DONE = 2;
 const STATUS_FAILED = 3;
 
-export interface ProvisioningRecoveryDeps extends Pick<ConnectionWorkflowDeps, 'caller' | 'events' | 'waitForRun' | 'signal'> {
+export interface ProvisioningRecoveryDeps {
+  caller: RPCCaller;
+  events: RunEventSource;
+  waitForRun: (
+    caller: RPCCaller,
+    events: RunEventSource,
+    runId: string,
+    options: WaitOptions,
+  ) => Promise<RPC.GetRun>;
+  signal: AbortSignal;
   primary: ReadyPrimaryState;
   platform: PlatformConnection;
   /** The active child request, when any. A journal owned by another caller
@@ -45,13 +57,6 @@ export async function recoverJournalOperation(
   return recoverProvisioning(deps, operation);
 }
 
-export class RecoveryRequiredError extends Error {
-  constructor() {
-    super('PostgreSQL recovery is required');
-    this.name = 'RecoveryRequiredError';
-  }
-}
-
 type RunMatch = { kind: 'absent' } | { kind: 'ambiguous' } | { kind: 'found'; id: string };
 type UnknownRecord = Record<string, unknown>;
 
@@ -68,8 +73,8 @@ function validLogicalIdentifier(value: unknown, prefix: 'db' | 'pg_user'): value
   return typeof value === 'string' && pattern.test(value);
 }
 
-function recoveryError(): RecoveryRequiredError {
-  return new RecoveryRequiredError();
+function recoveryError(): PostgresRecoveryRequiredError {
+  return new PostgresRecoveryRequiredError();
 }
 
 function validatePage(value: unknown, offset: number): { items: UnknownRecord[]; limit: number; total: number } {
@@ -152,7 +157,7 @@ async function existingConnection(
   operation: ConnectionOperation,
 ): Promise<RPC.CreateConnection | null> {
   try {
-    return await findExistingConnection(deps.caller, operation.callerId, operation.resourceId);
+    return await findExistingConnection(deps.caller, operation.callerId, operation.resourceId, deps.platform);
   } catch {
     throw recoveryError();
   }
@@ -339,7 +344,9 @@ export async function recoverProvisioning(
   if (operation.phase === 'provisioned' || operation.phase === 'persisting' || operation.phase === 'reconciliation-required') {
     if (operation.phase === 'reconciliation-required') {
       try {
-        const raced = await findExistingConnection(deps.caller, operation.callerId, operation.resourceId);
+        const raced = await findExistingConnection(
+          deps.caller, operation.callerId, operation.resourceId, deps.platform,
+        );
         if (raced && connectionBelongsToOperation(raced, operation)) {
           await clearLock(deps, operation);
           if (deps.requestedCallerId !== undefined && deps.requestedCallerId !== operation.callerId) {

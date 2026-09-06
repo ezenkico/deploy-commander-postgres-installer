@@ -1,5 +1,5 @@
 import type { RPCCaller, Wire } from '@ezenki/deploy-commander-installer-interface';
-import { findPrimaryResource, readPrimaryState } from './primaryState';
+import { findPrimaryResource, readPrimaryState, type ReadyPrimaryState } from './primaryState';
 import { parsePlatformConnection, type PlatformConnection } from './postgresContracts';
 import { readOperation } from './provisioningJournal';
 import { recoverJournalOperation, type ProvisioningRecoveryResult } from './recoverProvisioning';
@@ -11,7 +11,7 @@ export interface AppClient {
   events: RunEventSource;
 }
 
-function isReadyPrimary(value: Awaited<ReturnType<typeof readPrimaryState>>): value is Awaited<ReturnType<typeof readPrimaryState>> & { phase: 'ready'; resourceId: string } {
+function isReadyPrimary(value: Awaited<ReturnType<typeof readPrimaryState>>): value is ReadyPrimaryState {
   return value !== null && value.phase === 'ready' && typeof value.resourceId === 'string' && value.resourceId.trim().length > 0;
 }
 

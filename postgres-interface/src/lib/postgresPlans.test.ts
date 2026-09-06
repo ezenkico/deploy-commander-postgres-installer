@@ -139,16 +139,23 @@ fi`);
     expect(CLEANUP_SCRIPT).not.toContain(primary.credentials.password);
   });
 
-  it('returns only logical connection metadata', () => {
-    expect(buildConnectionMetadata(logical)).toEqual({
+  it('returns runner-ready logical connection metadata', () => {
+    expect(buildConnectionMetadata(logical, platform)).toEqual({
       host: 'postgres',
       port: 5432,
       database: logical.database,
       username: logical.username,
       password: logical.password,
+      platform_connection: platform,
     });
-    expect(buildConnectionMetadata(logical)).not.toHaveProperty('PGUSER');
-    expect(buildConnectionMetadata(logical)).not.toHaveProperty('PGPASSWORD');
+    expect(buildConnectionMetadata(logical, platform)).not.toHaveProperty('PGUSER');
+    expect(buildConnectionMetadata(logical, platform)).not.toHaveProperty('PGPASSWORD');
+  });
+
+  it('rejects malformed platform data before building connection metadata', () => {
+    expect(() => buildConnectionMetadata(logical, {
+      type: 'Platform', data: { network: '   ' },
+    })).toThrow('Invalid platform connection');
   });
 
   it.each([

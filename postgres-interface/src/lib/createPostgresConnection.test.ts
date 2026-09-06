@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RPCCaller, RPC } from '@ezenki/deploy-commander-installer-interface';
 import type { LogicalCredentials } from './credentials';
 import type { PlatformConnection } from './postgresContracts';
-import { createPostgresConnection, findExistingConnection, type ConnectionWorkflowDeps, type ReadyPrimaryState } from './createPostgresConnection';
+import { PostgresRecoveryRequiredError } from './postgresErrors';
+import { createPostgresConnection, type ConnectionWorkflowDeps } from './createPostgresConnection';
+import type { ReadyPrimaryState } from './primaryState';
 
 const resource: RPC.ResourceItem = {
   id: 'resource-1', type: 'postgres', name: 'postgres', external: false,
@@ -47,7 +49,12 @@ function deps(overrides: Partial<ConnectionWorkflowDeps> = {}): ConnectionWorkfl
       getResource: vi.fn().mockResolvedValue({ config: { platform_connection: platform } }),
       databaseQuery,
       start: vi.fn().mockResolvedValue({ id: 'run-1', queued_at: 'now', status: 0 }),
-      createConnection: vi.fn().mockResolvedValue({ connection: { id: 'connection-1' }, config: {} }),
+      createConnection: vi.fn().mockImplementation(async (
+        metadata: Record<string, unknown>, manager: string, external: boolean, resourceId: string,
+      ) => ({
+        connection: { id: 'connection-1', manager, resource: resourceId, external, created_at: 'now', updated_at: 'now' },
+        config: { id: 'connection-1', manager, resource: resourceId, metadata },
+      })),
     } as unknown as RPCCaller,
     events: { subscribe: vi.fn(() => () => undefined), publish: vi.fn() },
     storage: { getItem: vi.fn().mockReturnValue(null), setItem: vi.fn(), removeItem: vi.fn() } as unknown as Storage,
@@ -72,12 +79,12 @@ describe('createPostgresConnection validation and idempotency', () => {
     const d = deps();
     await expect(createPostgresConnection(d, request({ primary: { ...primary, resourceId: 'other' } }))).rejects.toThrow();
     expect(d.requestPermission).not.toHaveBeenCalled();
-    await expect(createPostgresConnection(d, request({ platform: { type: 'Platform', data: { network: ' ' } } as PlatformConnection }))).rejects.toThrow('platform');
+    await expect(createPostgresConnection(d, request({ platform: { type: 'Platform', data: { network: ' ' } } as PlatformConnection }))).rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
   });
 
   it('validates complete primary state and generated credentials before acquiring the lock', async () => {
     const incomplete = deps();
-    await expect(createPostgresConnection(incomplete, request({ primary: { ...primary, runId: null } }))).rejects.toThrow('ready PostgreSQL state');
+    await expect(createPostgresConnection(incomplete, request({ primary: { ...primary, runId: null } }))).rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
     expect(incomplete.caller.databaseQuery).not.toHaveBeenCalled();
     const malformed = deps({ generateCredentials: vi.fn().mockReturnValue({ ...logical, username: 'unsafe' }) });
     await expect(createPostgresConnection(malformed, request())).rejects.toThrow();
@@ -86,7 +93,7 @@ describe('createPostgresConnection validation and idempotency', () => {
 
   it('rejects a primary state with a malformed updated timestamp before locking', async () => {
     const d = deps();
-    await expect(createPostgresConnection(d, request({ primary: { ...primary, updatedAt: 'not-a-timestamp' } }))).rejects.toThrow('ready PostgreSQL state');
+    await expect(createPostgresConnection(d, request({ primary: { ...primary, updatedAt: 'not-a-timestamp' } }))).rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
     expect(d.caller.databaseQuery).not.toHaveBeenCalled();
   });
 
@@ -95,21 +102,25 @@ describe('createPostgresConnection validation and idempotency', () => {
       created_at: 'now', updated_at: 'now' };
     const d = deps({ caller: {
       getConnections: vi.fn().mockResolvedValue({ items: [existing], limit: 50, offset: 0, total: 1 }),
-      getConnection: vi.fn().mockResolvedValue({ connection: existing, config: { id: existing.id, manager: existing.manager, resource: existing.resource, metadata: {} } }),
+      getConnection: vi.fn().mockResolvedValue({ connection: existing, config: { id: existing.id, manager: existing.manager, resource: existing.resource,
+        metadata: { host: 'postgres', port: 5432, database: logical.database, username: logical.username, password: logical.password } } }),
       start: vi.fn(),
     } as unknown as RPCCaller });
-    await expect(createPostgresConnection(d, request())).resolves.toMatchObject({ connection: existing });
+    await expect(createPostgresConnection(d, request())).resolves.toMatchObject({
+      connection: existing,
+      config: { metadata: { platform_connection: platform } },
+    });
     expect(d.requestPermission).not.toHaveBeenCalled();
     expect(d.generateCredentials).not.toHaveBeenCalled();
     expect((d.caller.start as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
-  it('rejects malformed existing connections instead of reusing them', async () => {
+  it('requires recovery for malformed existing connection metadata instead of reusing it', async () => {
     const d = deps({ caller: {
       getConnections: vi.fn().mockResolvedValue({ items: [{ id: 'connection-1', manager: 'manager-2', resource: 'resource-1', external: false, created_at: 'now', updated_at: 'now' }], limit: 50, offset: 0, total: 1 }),
       getConnection: vi.fn().mockResolvedValue({ connection: { id: ' ', manager: 'manager-2', resource: 'resource-1', external: false }, config: {} }),
     } as unknown as RPCCaller });
-    await expect(createPostgresConnection(d, request())).rejects.toThrow('connection');
+    await expect(createPostgresConnection(d, request())).rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
     expect(d.requestPermission).not.toHaveBeenCalled();
   });
 
@@ -134,7 +145,7 @@ describe('createPostgresConnection validation and idempotency', () => {
     const d = deps({ caller: {
       getConnections: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 1 }),
     } as unknown as RPCCaller });
-    await expect(createPostgresConnection(d, request())).rejects.toThrow('connection');
+    await expect(createPostgresConnection(d, request())).rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
     expect(d.requestPermission).not.toHaveBeenCalled();
   });
 
@@ -145,7 +156,7 @@ describe('createPostgresConnection validation and idempotency', () => {
       getConnections: vi.fn().mockResolvedValue({ items: [first, second], limit: 50, offset: 0, total: 2 }),
       getConnection: vi.fn().mockImplementation(async (id: string) => ({ connection: id === 'c1' ? first : second, config: { id, manager: 'manager-2', resource: 'resource-1', metadata: {} } })),
     } as unknown as RPCCaller });
-    await expect(createPostgresConnection(d, request())).rejects.toThrow('connection');
+    await expect(createPostgresConnection(d, request())).rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
     expect(d.requestPermission).not.toHaveBeenCalled();
   });
 });
@@ -186,18 +197,27 @@ describe('createPostgresConnection successful orchestration', () => {
       } as unknown as RPCCaller,
     });
 
-    await expect(createPostgresConnection(d, request())).rejects.toThrow('ready PostgreSQL state');
+    await expect(createPostgresConnection(d, request())).rejects.toBeInstanceOf(PostgresRecoveryRequiredError);
     expect(d.caller.start).not.toHaveBeenCalled();
     expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([query]) => String(query).startsWith('DELETE postgres_operation'))).toBe(true);
   });
 
   it('provisions, waits, persists the exact connection, and releases the lock', async () => {
-    const d = deps();
+    const latestPlatform: PlatformConnection = { type: 'Platform', data: { network: 'latest-postgres-network' } };
+    const d = deps({
+      caller: {
+        ...(deps().caller as unknown as Record<string, unknown>),
+        getResource: vi.fn().mockResolvedValue({ config: { platform_connection: latestPlatform } }),
+      } as unknown as RPCCaller,
+    });
     const result = await createPostgresConnection(d, request());
-    expect(result).toMatchObject({ connection: { id: 'connection-1' } });
+    expect(result).toMatchObject({ connection: { id: 'connection-1' }, config: { metadata: { platform_connection: latestPlatform } } });
     expect(d.caller.start).toHaveBeenCalledWith('create-connection', 'ezenki/deploy-commander-runner:latest', expect.objectContaining({ services: expect.anything() }), expect.stringMatching(/^postgres-provision:/));
     expect(d.waitForRun).toHaveBeenCalledWith(d.caller, d.events, 'run-1', expect.objectContaining({ signal: d.signal }));
-    expect(d.caller.createConnection).toHaveBeenCalledWith({ host: 'postgres', port: 5432, database: logical.database, username: logical.username, password: logical.password }, 'manager-2', false, 'resource-1');
+    expect(d.caller.createConnection).toHaveBeenCalledWith({
+      host: 'postgres', port: 5432, database: logical.database, username: logical.username, password: logical.password,
+      platform_connection: latestPlatform,
+    }, 'manager-2', false, 'resource-1');
     expect(d.caller.databaseQuery).toHaveBeenCalled();
   });
 
@@ -227,7 +247,12 @@ describe('createPostgresConnection successful orchestration', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       return { id: 'run-1', queued_at: 'now', status: 0 };
     });
-    const creates = vi.fn().mockResolvedValue({ connection: { id: 'connection-1' }, config: {} });
+    const creates = vi.fn().mockImplementation(async (
+      metadata: Record<string, unknown>, manager: string, external: boolean, resourceId: string,
+    ) => ({
+      connection: { id: 'connection-1', manager, resource: resourceId, external, created_at: 'now', updated_at: 'now' },
+      config: { id: 'connection-1', manager, resource: resourceId, metadata },
+    }));
     const makeDeps = (): ConnectionWorkflowDeps => ({
       ...deps(),
       caller: {
@@ -255,7 +280,7 @@ describe('createPostgresConnection successful orchestration', () => {
       .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
       .mockResolvedValueOnce({ items: [existing], limit: 50, offset: 0, total: 1 });
     const full = { connection: existing, config: { id: existing.id, manager: existing.manager, resource: existing.resource,
-      metadata: { database: 'db_other', username: 'pg_user_other' } } };
+      metadata: { host: 'postgres', port: 5432, database: logical.database, username: logical.username, password: logical.password } } };
     const start = vi.fn()
       .mockResolvedValueOnce({ id: 'provision-run', queued_at: 'now', status: 0 })
       .mockResolvedValueOnce({ id: 'cleanup-run', queued_at: 'now', status: 0 });
@@ -271,7 +296,10 @@ describe('createPostgresConnection successful orchestration', () => {
         ? { results: [{ statement: 0, result: [{ phase: primary.phase, operation_id: primary.operationId, admin_username: primary.credentials.username, admin_password: primary.credentials.password, run_id: primary.runId, resource_id: primary.resourceId, initialized_at: primary.initializedAt, updated_at: primary.updatedAt }] }] }
         : { results: [{ statement: 0, result: [bindings.operation_id] }] }),
     } as unknown as RPCCaller, waitForRun });
-    await expect(createPostgresConnection(d, request())).resolves.toEqual(full);
+    await expect(createPostgresConnection(d, request())).resolves.toMatchObject({
+      connection: existing,
+      config: { metadata: { platform_connection: platform } },
+    });
     expect(start).toHaveBeenNthCalledWith(2, 'cleanup-connection', 'ezenki/deploy-commander-runner:latest', expect.objectContaining({ services: expect.anything() }), expect.stringMatching(/^postgres-cleanup:/));
     expect(waitForRun).toHaveBeenCalledTimes(2);
     const queries = (d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([query]) => query as string);
@@ -323,7 +351,7 @@ describe('createPostgresConnection successful orchestration', () => {
       getConnection: vi.fn().mockResolvedValue({
         connection: existing,
         config: { id: existing.id, manager: existing.manager, resource: existing.resource,
-          metadata: { database: logical.database, username: logical.username } },
+          metadata: { host: 'postgres', port: 5432, database: logical.database, username: logical.username, password: logical.password } },
       }),
       createConnection: vi.fn().mockRejectedValueOnce(new Error('ambiguous save')),
     } as unknown as RPCCaller });
@@ -358,40 +386,5 @@ describe('createPostgresConnection successful orchestration', () => {
     const d = deps();
     configure(d);
     await expect(createPostgresConnection(d, request())).rejects.not.toThrow(/password|secret/i);
-  });
-});
-
-describe('findExistingConnection', () => {
-  it('validates manager/resource ownership and external flag', async () => {
-    const caller = {
-      getConnections: vi.fn().mockResolvedValue({ items: [{ id: 'c1', manager: 'manager-2', resource: 'resource-1', external: false, created_at: 'now', updated_at: 'now' }], limit: 50, offset: 0, total: 1 }),
-      getConnection: vi.fn().mockResolvedValue({ connection: { id: 'c1', manager: 'manager-2', resource: 'resource-1', external: false, created_at: 'now', updated_at: 'now' }, config: { id: 'c1', manager: 'manager-2', resource: 'resource-1', metadata: {} } }),
-    } as unknown as RPCCaller;
-    await expect(findExistingConnection(caller, 'manager-2', 'resource-1')).resolves.toMatchObject({ connection: { id: 'c1' } });
-  });
-
-  it('rejects multiple valid connections across pages instead of reusing either', async () => {
-    const first = { id: 'c1', manager: 'manager-2', resource: 'resource-1', external: false, created_at: 'now', updated_at: 'now' };
-    const second = { ...first, id: 'c2' };
-    const caller = {
-      getConnections: vi.fn()
-        .mockResolvedValueOnce({ items: [first], limit: 1, offset: 0, total: 2 })
-        .mockResolvedValueOnce({ items: [second], limit: 1, offset: 1, total: 2 }),
-      getConnection: vi.fn().mockImplementation(async (id: string) => ({ connection: id === 'c1' ? first : second, config: { id, manager: 'manager-2', resource: 'resource-1', metadata: {} } })),
-    } as unknown as RPCCaller;
-    await expect(findExistingConnection(caller, 'manager-2', 'resource-1')).rejects.toThrow('connection');
-  });
-
-  it.each([
-    { items: [{ id: 'c1' }], limit: 50, offset: 1, total: 1 },
-    { items: [{ id: 'c1' }], limit: 50, offset: 0, total: 0 },
-    { items: [{ id: 'c1' }, { id: 'c2' }], limit: 50, offset: 0, total: 1 },
-    { items: [], limit: 50, offset: 1, total: 0 },
-    { items: [], limit: 50, offset: 0, total: 1 },
-    { items: [{ id: 'c1', manager: 'manager-2', resource: 'resource-1', external: false, created_at: 'now', updated_at: 'now' }], limit: 50, offset: 0, total: 100 },
-  ])('rejects inconsistent connection page metadata %#', async (page) => {
-    const caller = { getConnections: vi.fn().mockResolvedValue(page) } as unknown as RPCCaller;
-    await expect(findExistingConnection(caller, 'manager-2', 'resource-1')).rejects.toThrow('connection');
-    expect(caller.getConnections).toHaveBeenCalledTimes(1);
   });
 });

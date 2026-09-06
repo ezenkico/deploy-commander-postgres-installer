@@ -106,6 +106,12 @@ On success, the child closes with an `InterfaceResponse` equivalent to:
         database: string,
         username: string,
         password: string,
+        platform_connection: {
+          type: "Platform",
+          data: {
+            network: string,
+          },
+        },
       },
     },
   },
@@ -123,6 +129,7 @@ The connection metadata fields are:
 | `database` | `string` | Generated logical database owned by this connection |
 | `username` | `string` | Generated login role scoped to the logical database |
 | `password` | `string` | Generated password for that login role |
+| `platform_connection` | `PlatformConnection` | Authoritative runner-generated Docker resource connection; pass the complete value to the consuming service's `connections` array |
 
 The returned username and password belong only to the consuming manager's logical database. They are not the primary PostgreSQL administrator credentials.
 
@@ -142,20 +149,34 @@ const metadata = created.config.metadata as {
   database: string;
   username: string;
   password: string;
+  platform_connection: {
+    type: "Platform";
+    data: { network: string };
+  };
 };
 
-const clientConfiguration = {
-  host: metadata.host,
-  port: metadata.port,
-  database: metadata.database,
-  user: metadata.username,
-  password: metadata.password,
+const plan = {
+  services: {
+    app: {
+      image: "your-application-image",
+      connections: [metadata.platform_connection],
+      environment: {
+        PGHOST: metadata.host,
+        PGPORT: String(metadata.port),
+        PGDATABASE: metadata.database,
+        PGUSER: metadata.username,
+        PGPASSWORD: metadata.password,
+      },
+    },
+  },
 };
 ```
 
-Pass the fields separately to the PostgreSQL client used by the consuming workload. Do not log the metadata. Do not copy the password into resource metadata, interface metadata, URLs, browser persistence, run notes, or error messages.
+Pass the application fields separately to the PostgreSQL client or workload configuration, and pass the complete `platform_connection` unchanged to the consuming service's runner plan. The `PlatformConnection` is runner input; its Docker network string is not an application environment variable. Do not reconstruct, prefix, or rename `data.network`, and do not create the network yourself.
 
-The hostname `postgres` is meaningful on the platform network attached to the PostgreSQL resource. A workload must be connected through the corresponding Deploy Commander resource/connection relationship; code running outside that network should not assume the alias is resolvable.
+The runner attaches the consuming service to the exact existing Docker network named by the resolved platform connection. The hostname `postgres` resolves only for a workload whose runner service includes this connection. Code running outside that network should not assume the alias is resolvable.
+
+The child workflow enriches otherwise-valid legacy records at response time. Re-open the child workflow when obtaining a connection instead of assuming that a separately cached historical `getConnection` response includes `platform_connection`. The complete metadata object contains credentials and must not be logged or copied into resource metadata, interface metadata, URLs, browser persistence, run notes, or error messages.
 
 ## Failure contract
 
