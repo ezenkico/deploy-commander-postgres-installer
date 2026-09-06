@@ -435,7 +435,8 @@ export async function createPostgresConnection(
       reconciled = await findExistingConnection(
         deps.caller, request.callingManagerId, request.resource.id, revalidatedInstallation.platform,
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof PostgresRecoveryRequiredError) throw error;
       throw new Error(PERSIST_ERROR);
     }
     if (reconciled && connectionBelongsToOperation(reconciled, operation)) {

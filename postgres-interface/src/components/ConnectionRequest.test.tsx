@@ -95,6 +95,23 @@ describe('ConnectionRequest child errors', () => {
 });
 
 describe('ConnectionRequest lifecycle', () => {
+  it('does not restart an active creation flow when rerendered with the same request', async () => {
+    let resolveResource: (value: unknown) => void = () => undefined;
+    const resourceRequest = new Promise((resolve) => { resolveResource = resolve; });
+    const wire = { close: vi.fn() } as unknown as Wire;
+    const caller = { getResource: vi.fn().mockReturnValue(resourceRequest) } as unknown as RPCCaller;
+    const props = baseProps(caller, wire);
+    const view = render(<ConnectionRequest {...props} />);
+
+    await waitFor(() => expect(caller.getResource).toHaveBeenCalledTimes(1));
+    view.rerender(<ConnectionRequest {...props} />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(caller.getResource).toHaveBeenCalledTimes(1);
+    view.unmount();
+    resolveResource({ config: { platform_connection: { type: 'Platform', data: { network: 'postgres-network' } } } });
+  });
+
   it('closes an initial success exactly once across a rerender', async () => {
     const wire = { close: vi.fn() } as unknown as Wire;
     const caller = {} as RPCCaller;
