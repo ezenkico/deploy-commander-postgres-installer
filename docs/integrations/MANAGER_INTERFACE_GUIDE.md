@@ -8,10 +8,10 @@ This guide explains how to build a manager frontend that runs inside the Deploy 
 
 This document is intended for:
 
-* Coding agents implementing a manager frontend
-* Developers integrating an existing frontend with Deploy Commander
-* Developers building parent and child manager workflows
-* Developers using manager-scoped resources, connections, runs, events, and tokens
+- Coding agents implementing a manager frontend
+- Developers integrating an existing frontend with Deploy Commander
+- Developers building parent and child manager workflows
+- Developers using manager-scoped resources, connections, runs, events, and tokens
 
 This guide is for consumers of the library.
 
@@ -41,12 +41,12 @@ Deploy Commander backend
 
 The library provides:
 
-* A wire transport
-* Typed RPC methods
-* Parent and child interface communication
-* Child-interface lifecycle handling
-* Run event delivery
-* Manager-token refresh support
+- A wire transport
+- Typed RPC methods
+- Parent and child interface communication
+- Child-interface lifecycle handling
+- Run event delivery
+- Manager-token refresh support
 
 ## Core Security Model
 
@@ -80,9 +80,9 @@ npm install @ezenki/deploy-commander-installer-interface
 
 The package provides:
 
-* ESM output
-* CommonJS output
-* TypeScript declarations
+- ESM output
+- CommonJS output
+- TypeScript declarations
 
 ## Basic Initialization
 
@@ -103,14 +103,9 @@ import {
   type RPCResponse,
 } from "@ezenki/deploy-commander-installer-interface";
 
-import {
-  RPC,
-  Events,
-} from "@ezenki/deploy-commander-installer-interface";
+import { RPC, Events } from "@ezenki/deploy-commander-installer-interface";
 
-async function handleIncomingCall(
-  call: RPCCall
-): Promise<RPCResponse> {
+async function handleIncomingCall(call: RPCCall): Promise<RPCResponse> {
   switch (call.request) {
     case "ping":
       return {
@@ -146,10 +141,7 @@ function handleEvent(event: Events.InterfaceEvent) {
   }
 }
 
-const wire = createWire(
-  handleIncomingCall,
-  handleEvent
-);
+const wire = createWire(handleIncomingCall, handleEvent);
 
 const caller = RPC.SetupRPCCaller(wire);
 ```
@@ -196,7 +188,7 @@ try {
   console.error(
     error?.message ?? "RPC call failed",
     error?.status,
-    error?.details
+    error?.details,
   );
 }
 ```
@@ -214,12 +206,25 @@ Typical RPC errors use this shape:
 Do not rely only on:
 
 ```ts
-error instanceof Error
+error instanceof Error;
 ```
 
 ## Available RPC Calls
 
 ## Runs
+
+### Run Status Values
+
+Run status fields and the `statuses` and `not_statuses` filters use these numeric values:
+
+```ts
+import {
+  STATUS_QUEUED,
+  STATUS_RUNNING,
+  STATUS_DONE,
+  STATUS_FAILED,
+} from "@ezenki/deploy-commander-installer-interface";
+```
 
 ### Start a Run
 
@@ -234,7 +239,7 @@ const result = await caller.start(
   "docker",
   {
     image: "example/app:1.2.3",
-  }
+  },
 );
 ```
 
@@ -272,7 +277,7 @@ const result = await caller.getRuns(
   undefined,
   "-created_at",
   50,
-  0
+  0,
 );
 ```
 
@@ -354,8 +359,7 @@ Consumers should be prepared for a null-like runtime result even if the current 
 Example:
 
 ```ts
-const callingManager =
-  await caller.getCallingManager();
+const callingManager = await caller.getCallingManager();
 
 if (callingManager) {
   console.log("Opened by manager", callingManager);
@@ -393,13 +397,7 @@ if (
 ### List Resources
 
 ```ts
-const result = await caller.getResources(
-  "database",
-  false,
-  undefined,
-  50,
-  0
-);
+const result = await caller.getResources("database", false, undefined, 50, 0);
 ```
 
 Arguments:
@@ -416,6 +414,23 @@ getResources(
 
 This returns resource summaries.
 
+Each item has the following shape:
+
+```ts
+interface ResourceItem {
+  agent?: string;
+  created_at: string;
+  external: boolean;
+  id: string;
+  name: string;
+  manager: string;
+  type: string;
+  updated_at: string;
+}
+```
+
+The `manager` field identifies the manager that owns the resource.
+
 It does not return full resource configuration.
 
 The optional `manager` argument is a list filter.
@@ -425,12 +440,7 @@ It does not redefine the identity of the current interface.
 ### List Resources Owned by the Current Manager
 
 ```ts
-const result = await caller.getMyResources(
-  "database",
-  false,
-  50,
-  0
-);
+const result = await caller.getMyResources("database", false, 50, 0);
 ```
 
 Arguments:
@@ -449,9 +459,7 @@ Deploy Commander injects the current manager scope.
 ### Get One Resource
 
 ```ts
-const result = await caller.getResource(
-  resourceId
-);
+const result = await caller.getResource(resourceId);
 ```
 
 Returns:
@@ -462,6 +470,8 @@ Returns:
   config: ResourceConfiguration;
 }
 ```
+
+The returned `resource.manager` identifies the manager that owns the resource.
 
 This call only succeeds when the resource is owned by the current manager.
 
@@ -487,19 +497,14 @@ const result = await caller.createResource(
   },
   false,
   "Primary Database",
-  "database"
+  "database",
 );
 ```
 
 Arguments:
 
 ```ts
-createResource(
-  config,
-  external,
-  name,
-  type
-)
+createResource(config, external, name, type);
 ```
 
 The current manager is injected by Deploy Commander.
@@ -509,13 +514,13 @@ Do not include or attempt to override the owning manager in the config.
 The config field is:
 
 ```ts
-metadata
+metadata;
 ```
 
 Do not use the previous misspelling:
 
 ```ts
-medatata
+medatata;
 ```
 
 ## Connections
@@ -524,18 +529,13 @@ Connections associate a manager with a resource.
 
 A connection may be visible to the current manager because:
 
-* The current manager owns the connection
-* The current manager owns the resource attached to the connection
+- The current manager owns the connection
+- The current manager owns the resource attached to the connection
 
 ### List Connections
 
 ```ts
-const result = await caller.getConnections(
-  50,
-  0,
-  undefined,
-  resourceId
-);
+const result = await caller.getConnections(50, 0, undefined, resourceId);
 ```
 
 Arguments:
@@ -551,10 +551,10 @@ getConnections(
 
 Optional filters:
 
-* Connection-owning manager
-* Resource
-* Limit
-* Offset
+- Connection-owning manager
+- Resource
+- Limit
+- Offset
 
 The manager filter only narrows the visible result set.
 
@@ -576,9 +576,7 @@ The list contains connection summaries and does not contain full connection conf
 ### Get One Connection
 
 ```ts
-const result = await caller.getConnection(
-  connectionId
-);
+const result = await caller.getConnection(connectionId);
 ```
 
 Returns:
@@ -592,8 +590,8 @@ Returns:
 
 This call only succeeds when:
 
-* The current manager owns the connection
-* Or the current manager owns the attached resource
+- The current manager owns the connection
+- Or the current manager owns the attached resource
 
 The library sends only the connection ID.
 
@@ -609,19 +607,14 @@ const result = await caller.createConnection(
   },
   connectionOwningManagerId,
   false,
-  resourceId
+  resourceId,
 );
 ```
 
 Arguments:
 
 ```ts
-createConnection(
-  config,
-  manager,
-  external,
-  resource
-)
+createConnection(config, manager, external, resource);
 ```
 
 The `manager` argument is the manager that will own the connection.
@@ -641,13 +634,11 @@ const existing = await caller.getConnections(
   1,
   0,
   connectionOwningManagerId,
-  resourceId
+  resourceId,
 );
 
 if (existing.total > 0) {
-  throw new Error(
-    "A connection already exists for this manager and resource"
-  );
+  throw new Error("A connection already exists for this manager and resource");
 }
 ```
 
@@ -670,7 +661,7 @@ const response = await caller.databaseQuery(
   `,
   {
     status: "ready",
-  }
+  },
 );
 ```
 
@@ -705,13 +696,9 @@ Manager frontends may need a short-lived manager token for calling another authe
 ### Retrieve a Token Directly
 
 ```ts
-const response =
-  await caller.getManagerToken();
+const response = await caller.getManagerToken();
 
-console.log(
-  response.token,
-  response.expires_at
-);
+console.log(response.token, response.expires_at);
 ```
 
 ### Use the Token Manager
@@ -719,37 +706,27 @@ console.log(
 The higher-level token manager automatically refreshes the token before expiration.
 
 ```ts
-import {
-  Caller,
-} from "@ezenki/deploy-commander-installer-interface";
+import { Caller } from "@ezenki/deploy-commander-installer-interface";
 
-const tokenManager =
-  await Caller.generateTokenManager(caller);
+const tokenManager = await Caller.generateTokenManager(caller);
 
-const initialToken =
-  tokenManager.getToken();
+const initialToken = tokenManager.getToken();
 ```
 
 Register for updates:
 
 ```ts
-const handleTokenUpdate = (
-  token: string
-) => {
+const handleTokenUpdate = (token: string) => {
   console.log("Token updated", token);
 };
 
-tokenManager.addTokenUpdateEvent(
-  handleTokenUpdate
-);
+tokenManager.addTokenUpdateEvent(handleTokenUpdate);
 ```
 
 Remove a listener:
 
 ```ts
-tokenManager.removeTokenUpdateEvent(
-  handleTokenUpdate
-);
+tokenManager.removeTokenUpdateEvent(handleTokenUpdate);
 ```
 
 Dispose the manager:
@@ -769,9 +746,7 @@ A failed scheduled refresh may stop automatic refreshing, so consuming applicati
 Pass an event callback to `createWire`.
 
 ```ts
-function handleEvent(
-  event: Events.InterfaceEvent
-) {
+function handleEvent(event: Events.InterfaceEvent) {
   switch (event.eventType) {
     case "run-start":
       handleRunStart(event.data);
@@ -805,12 +780,8 @@ A run-start event has:
 Example:
 
 ```ts
-function handleRunStart(
-  data: Events.RunStartEventData
-) {
-  console.log(
-    `Run ${data.id} started for ${data.manager}`
-  );
+function handleRunStart(data: Events.RunStartEventData) {
+  console.log(`Run ${data.id} started for ${data.manager}`);
 }
 ```
 
@@ -818,36 +789,24 @@ function handleRunStart(
 
 A run update contains either:
 
-* A structured event
-* A log entry
+- A structured event
+- A log entry
 
 Example:
 
 ```ts
-function handleRunUpdate(
-  update: Events.RunUpdateData
-) {
+function handleRunUpdate(update: Events.RunUpdateData) {
   if (update.type === "event") {
     const event = update.payload;
 
-    console.log(
-      event.seq,
-      event.phase,
-      event.status,
-      event.message
-    );
+    console.log(event.seq, event.phase, event.status, event.message);
 
     return;
   }
 
   const log = update.payload;
 
-  console.log(
-    log.seq,
-    log.stream,
-    log.level,
-    log.message
-  );
+  console.log(log.seq, log.stream, log.level, log.message);
 }
 ```
 
@@ -862,13 +821,12 @@ A manager interface may communicate with the interface that opened it or with in
 ## Send a Call to the Parent
 
 ```ts
-const response =
-  await wire.sendToParent({
-    request: "registrationComplete",
-    payload: {
-      resourceId,
-    },
-  });
+const response = await wire.sendToParent({
+  request: "registrationComplete",
+  payload: {
+    resourceId,
+  },
+});
 ```
 
 Handle the response:
@@ -886,14 +844,10 @@ In that case Deploy Commander returns a failed RPC response.
 ## Send a Call to a Child
 
 ```ts
-const response =
-  await wire.sendToChild(
-    childId,
-    {
-      request: "getStatus",
-      payload: {},
-    }
-  );
+const response = await wire.sendToChild(childId, {
+  request: "getStatus",
+  payload: {},
+});
 ```
 
 The child must be a valid interface opened through the current parent relationship.
@@ -905,9 +859,7 @@ The first argument passed to `createWire` handles incoming interface RPC calls.
 Example:
 
 ```ts
-async function handleIncomingCall(
-  call: RPCCall
-): Promise<RPCResponse> {
+async function handleIncomingCall(call: RPCCall): Promise<RPCResponse> {
   try {
     switch (call.request) {
       case "getStatus":
@@ -919,9 +871,7 @@ async function handleIncomingCall(
         };
 
       case "setConfiguration":
-        await applyConfiguration(
-          call.payload
-        );
+        await applyConfiguration(call.payload);
 
         return {
           ok: true,
@@ -932,8 +882,7 @@ async function handleIncomingCall(
         return {
           ok: false,
           error: {
-            message:
-              `Unknown request: ${call.request}`,
+            message: `Unknown request: ${call.request}`,
           },
         };
     }
@@ -941,9 +890,7 @@ async function handleIncomingCall(
     return {
       ok: false,
       error: {
-        message:
-          error?.message ??
-          "Incoming call failed",
+        message: error?.message ?? "Incoming call failed",
       },
     };
   }
@@ -961,14 +908,13 @@ Return a structured failed response instead.
 Use:
 
 ```ts
-const child =
-  await wire.startInterface({
-    manager: childManagerId,
-    metadata: {
-      resourceId,
-      purpose: "configure",
-    },
-  });
+const child = await wire.startInterface({
+  manager: childManagerId,
+  metadata: {
+    resourceId,
+    purpose: "configure",
+  },
+});
 ```
 
 The result contains:
@@ -989,17 +935,12 @@ wire.sendToChild(...)
 Wait for the child to close:
 
 ```ts
-const closeResponse =
-  await child.close;
+const closeResponse = await child.close;
 
 if (!closeResponse.ok) {
-  console.error(
-    closeResponse.error
-  );
+  console.error(closeResponse.error);
 } else {
-  console.log(
-    closeResponse.result
-  );
+  console.log(closeResponse.result);
 }
 ```
 
@@ -1024,8 +965,7 @@ wire.close({
   manager: managerId,
   ok: false,
   error: {
-    message:
-      "A connection already exists",
+    message: "A connection already exists",
     status: 409,
   },
 });
@@ -1061,48 +1001,32 @@ import {
   type RPCResponse,
 } from "@ezenki/deploy-commander-installer-interface";
 
-async function handleIncomingCall(
-  call: RPCCall
-): Promise<RPCResponse> {
+async function handleIncomingCall(call: RPCCall): Promise<RPCResponse> {
   return {
     ok: false,
     error: {
-      message:
-        `Unsupported request: ${call.request}`,
+      message: `Unsupported request: ${call.request}`,
     },
   };
 }
 
 async function startApplication() {
-  const wire = createWire(
-    handleIncomingCall,
-    (event) => {
-      console.log("Interface event", event);
-    }
-  );
+  const wire = createWire(handleIncomingCall, (event) => {
+    console.log("Interface event", event);
+  });
 
-  const caller =
-    RPC.SetupRPCCaller(wire);
+  const caller = RPC.SetupRPCCaller(wire);
 
   let tokenManager:
-    | Awaited<
-        ReturnType<
-          typeof Caller.generateTokenManager
-        >
-      >
+    | Awaited<ReturnType<typeof Caller.generateTokenManager>>
     | undefined;
 
   try {
-    const manager =
-      await caller.getManager();
+    const manager = await caller.getManager();
 
-    const metadata =
-      await caller.getMetadata();
+    const metadata = await caller.getMetadata();
 
-    tokenManager =
-      await Caller.generateTokenManager(
-        caller
-      );
+    tokenManager = await Caller.generateTokenManager(caller);
 
     return {
       wire,
@@ -1125,21 +1049,14 @@ For a manager that configures a resource and connection:
 
 ```ts
 async function configureManager(
-  caller: ReturnType<
-    typeof RPC.SetupRPCCaller
-  >,
-  wire: ReturnType<
-    typeof createWire
-  >
+  caller: ReturnType<typeof RPC.SetupRPCCaller>,
+  wire: ReturnType<typeof createWire>,
 ) {
-  const currentManager =
-    await caller.getManager();
+  const currentManager = await caller.getManager();
 
-  const callingManager =
-    await caller.getCallingManager();
+  const callingManager = await caller.getCallingManager();
 
-  const metadata =
-    await caller.getMetadata();
+  const metadata = await caller.getMetadata();
 
   if (
     !metadata ||
@@ -1150,29 +1067,26 @@ async function configureManager(
       manager: currentManager.id,
       ok: false,
       error: {
-        message:
-          "metadata.resourceId is required",
+        message: "metadata.resourceId is required",
       },
     });
 
     return;
   }
 
-  const existing =
-    await caller.getConnections(
-      1,
-      0,
-      callingManager || undefined,
-      metadata.resourceId
-    );
+  const existing = await caller.getConnections(
+    1,
+    0,
+    callingManager || undefined,
+    metadata.resourceId,
+  );
 
   if (existing.total > 0) {
     wire.close({
       manager: currentManager.id,
       ok: false,
       error: {
-        message:
-          "A connection already exists",
+        message: "A connection already exists",
         status: 409,
       },
     });
@@ -1180,18 +1094,15 @@ async function configureManager(
     return;
   }
 
-  const created =
-    await caller.createConnection(
-      {
-        username:
-          callingManager,
-        password:
-          generatePassword(),
-      },
-      callingManager,
-      false,
-      metadata.resourceId
-    );
+  const created = await caller.createConnection(
+    {
+      username: callingManager,
+      password: generatePassword(),
+    },
+    callingManager,
+    false,
+    metadata.resourceId,
+  );
 
   wire.close({
     manager: currentManager.id,
@@ -1207,28 +1118,22 @@ The exact metadata and connection configuration depend on the manager implementa
 
 Treat the following as untrusted:
 
-* Interface metadata
-* Parent RPC payloads
-* Child RPC payloads
-* RPC error details
-* Optional backend fields
-* Platform-specific configuration
-* Resource metadata
-* Connection metadata
+- Interface metadata
+- Parent RPC payloads
+- Child RPC payloads
+- RPC error details
+- Optional backend fields
+- Platform-specific configuration
+- Resource metadata
+- Connection metadata
 
 Validate required fields before using them.
 
 Example:
 
 ```ts
-function isRecord(
-  value: unknown
-): value is Record<string, unknown> {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value)
-  );
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 ```
 
@@ -1239,20 +1144,18 @@ Use named validation functions for complex metadata instead of repeated type ass
 Do not bypass the library with calls such as:
 
 ```ts
-fetch(
-  "/api/v1/resources/..."
-);
+fetch("/api/v1/resources/...");
 ```
 
 unless the application has a deliberate separate API integration approved by the Deploy Commander design.
 
 Direct API calls can:
 
-* Bypass interface context injection
-* Depend on undocumented routes
-* Break manager ownership assumptions
-* Duplicate RPC behavior
-* Make the manager frontend harder to run outside one Deploy Commander deployment
+- Bypass interface context injection
+- Depend on undocumented routes
+- Break manager ownership assumptions
+- Duplicate RPC behavior
+- Make the manager frontend harder to run outside one Deploy Commander deployment
 
 Use `RPCCaller` for platform operations.
 
@@ -1261,19 +1164,13 @@ Use `RPCCaller` for platform operations.
 Do not design calls like:
 
 ```ts
-getResource(
-  currentManagerId,
-  resourceId
-);
+getResource(currentManagerId, resourceId);
 ```
 
 or:
 
 ```ts
-getConnection(
-  currentManagerId,
-  connectionId
-);
+getConnection(currentManagerId, connectionId);
 ```
 
 The current manager identity belongs to Deploy Commander.
@@ -1284,11 +1181,11 @@ The library should only send the requested object ID for these scoped operations
 
 Manager frontends should separate:
 
-* Local UI state
-* Deploy Commander data
-* Interface metadata
-* Parent or child interface state
-* Temporary manager tokens
+- Local UI state
+- Deploy Commander data
+- Interface metadata
+- Parent or child interface state
+- Temporary manager tokens
 
 Do not store temporary tokens in long-term browser storage unless there is a specific reason.
 
@@ -1306,11 +1203,11 @@ Framework code should wrap it at the application boundary.
 
 For React, a provider or top-level hook may own:
 
-* `Wire`
-* `RPCCaller`
-* Event dispatch
-* Token manager
-* Cleanup
+- `Wire`
+- `RPCCaller`
+- Event dispatch
+- Token manager
+- Cleanup
 
 For Vue or Svelte, use an equivalent application-level service or store.
 
@@ -1322,24 +1219,24 @@ Use one stable instance for the manager interface lifecycle.
 
 An agent implementing a manager frontend should confirm:
 
-* The package is installed.
-* A single wire instance is created.
-* An incoming RPC handler is provided.
-* An event handler is provided when run events are needed.
-* `RPC.SetupRPCCaller` is used.
-* Interface metadata is validated.
-* Scoped calls do not include a caller-selected current manager ID.
-* Resource ownership restrictions are understood.
-* Connection visibility restrictions are understood.
-* Existing connections are checked before creation when required.
-* RPC errors are handled as structured objects.
-* Child-interface close responses are handled.
-* Manager workflows close with `wire.close`.
-* Local listeners are removed with `wire.end`.
-* Token managers are disposed.
-* Direct Deploy Commander API calls are avoided.
-* Public connection and resource types match the library.
-* The application handles optional event fields.
+- The package is installed.
+- A single wire instance is created.
+- An incoming RPC handler is provided.
+- An event handler is provided when run events are needed.
+- `RPC.SetupRPCCaller` is used.
+- Interface metadata is validated.
+- Scoped calls do not include a caller-selected current manager ID.
+- Resource ownership restrictions are understood.
+- Connection visibility restrictions are understood.
+- Existing connections are checked before creation when required.
+- RPC errors are handled as structured objects.
+- Child-interface close responses are handled.
+- Manager workflows close with `wire.close`.
+- Local listeners are removed with `wire.end`.
+- Token managers are disposed.
+- Direct Deploy Commander API calls are avoided.
+- Public connection and resource types match the library.
+- The application handles optional event fields.
 
 ## Important Access Rules
 
@@ -1353,8 +1250,8 @@ Keep these rules visible when implementing manager workflows:
 
 `getConnections(...)` only lists connections:
 
-* Owned by the current manager
-* Or attached to resources owned by the current manager
+- Owned by the current manager
+- Or attached to resources owned by the current manager
 
 `getConnection(id)` follows the same visibility rule and includes full connection configuration.
 
@@ -1376,13 +1273,13 @@ Use the library as the platform boundary for manager frontend code.
 
 A well-structured manager frontend should:
 
-* Create one wire
-* Create one typed caller
-* Validate all incoming metadata
-* Use RPC calls instead of direct platform fetches
-* Respect manager-scoped resource and connection rules
-* Handle structured errors
-* Clean up timers and listeners
-* Close the interface with a meaningful result or error
+- Create one wire
+- Create one typed caller
+- Validate all incoming metadata
+- Use RPC calls instead of direct platform fetches
+- Respect manager-scoped resource and connection rules
+- Handle structured errors
+- Clean up timers and listeners
+- Close the interface with a meaningful result or error
 
 The most important rule is that the manager frontend may request actions, but Deploy Commander owns the trusted manager context and authorization boundary.
