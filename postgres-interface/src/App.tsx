@@ -25,6 +25,8 @@ type BootView =
   | { kind: 'error'; message: string };
 
 function managerId(value: unknown): string | null {
+  console.log(value);
+  if(typeof value === "string") return value;
   if (typeof value !== 'object' || value === null) return null;
   const id = (value as { id?: unknown }).id;
   return typeof id === 'string' && id.trim().length > 0 ? id : null;
