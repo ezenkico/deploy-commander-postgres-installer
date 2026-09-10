@@ -199,6 +199,24 @@ describe('App lifecycle and resource routing', () => {
     expect(actionSignal?.aborted).toBe(true);
   });
 
+  it('clears a failed lifecycle action after a successful recovery refresh', async () => {
+    vi.spyOn(installationLifecycle, 'installPostgres')
+      .mockRejectedValueOnce(new Error('private runner detail'))
+      .mockResolvedValueOnce(undefined);
+    const current = appClient();
+    render(<App createClient={() => current} />);
+    await screen.findByRole('button', { name: 'Install PostgreSQL' });
+
+    screen.getByRole('button', { name: 'Install PostgreSQL' }).click();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Unable to complete PostgreSQL lifecycle action',
+    );
+
+    screen.getByRole('button', { name: 'Retry recovery' }).click();
+    await screen.findByRole('button', { name: 'Install PostgreSQL' });
+    expect(screen.queryByText('Unable to complete PostgreSQL lifecycle action')).not.toBeInTheDocument();
+  });
+
   it('uses resource and private state instead of unrelated run events', async () => {
     const client = appClient();
     const factory: AppClientFactory = () => client;

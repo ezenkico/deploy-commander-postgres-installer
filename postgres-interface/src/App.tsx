@@ -227,6 +227,7 @@ export default function App({ createClient = productionClient }: AppProps) {
   }, [createClient, refreshKey]);
 
   const requestRefresh = () => {
+    setActionError(null);
     setPresentation(null);
     setRefreshKey((value) => value + 1);
   };
