@@ -36,4 +36,3 @@ viewports; no new fixed-width overflow risk was introduced.
 - `npm run lint` — passed with zero errors or warnings.
 - `npm run build` — passed.
 - `git diff --check d614128..b7ee0ea` — passed.
-
