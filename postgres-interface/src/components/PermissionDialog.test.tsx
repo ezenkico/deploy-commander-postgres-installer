@@ -18,6 +18,12 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof PermissionD
 }
 
 describe('PermissionDialog', () => {
+  it('wraps a long caller identity inside the dialog', () => {
+    renderDialog({ callerId: `manager-${'a'.repeat(160)}` });
+
+    expect(screen.getByTestId('calling-manager-id')).toHaveClass('break-all');
+  });
+
   it('renders an accessible dialog identifying the untrusted caller', () => {
     renderDialog();
 

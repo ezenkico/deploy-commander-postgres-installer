@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RPC, RPCCaller, Wire } from '@ezenki/deploy-commander-installer-interface';
 import PermissionDialog from './PermissionDialog';
+import ManagerShell from './ManagerShell';
+import StatusPanel from './StatusPanel';
 import { generateConnectionCredentials } from '../lib/credentials';
 import { parsePlatformConnection } from '../lib/postgresContracts';
 import { createPostgresConnection, type PermissionDecision } from '../lib/createPostgresConnection';
@@ -139,8 +141,36 @@ export default function ConnectionRequest({
     };
   }, [caller, events, wire, currentManagerId, callingManagerId, resource, primary, initialError, initialResult, storage, closeOnce]);
 
+  const progress = <ManagerShell badge={{ label: 'Connecting', tone: 'progress' }}>
+    <StatusPanel
+      tone="progress"
+      eyebrow="Logical database request"
+      title={busy ? 'Creating PostgreSQL connection' : 'Preparing PostgreSQL connection'}
+      role="status"
+    >
+      The manager is validating the installation and preparing isolated database credentials.
+    </StatusPanel>
+  </ManagerShell>;
+
   if (prompt) {
-    return <PermissionDialog callerId={callingManagerId ?? ''} busy={busy} onAllow={(remember) => { pendingRef.current?.({ allowed: true, remember }); pendingRef.current = null; setPrompt(false); setBusy(true); }} onCancel={() => { pendingRef.current?.({ allowed: false, remember: false }); pendingRef.current = null; setPrompt(false); }} />;
+    return <>
+      {progress}
+      <PermissionDialog
+        callerId={callingManagerId ?? ''}
+        busy={busy}
+        onAllow={(remember) => {
+          pendingRef.current?.({ allowed: true, remember });
+          pendingRef.current = null;
+          setPrompt(false);
+          setBusy(true);
+        }}
+        onCancel={() => {
+          pendingRef.current?.({ allowed: false, remember: false });
+          pendingRef.current = null;
+          setPrompt(false);
+        }}
+      />
+    </>;
   }
-  return <div role="status">{busy ? 'Creating PostgreSQL connection…' : 'Preparing PostgreSQL connection…'}</div>;
+  return progress;
 }
