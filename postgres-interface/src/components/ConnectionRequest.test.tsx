@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { RPCCaller, RPC, Wire } from '@ezenki/deploy-commander-installer-interface';
 import ConnectionRequest from './ConnectionRequest';
 import type { ReadyPrimaryState } from '../lib/primaryState';
@@ -95,6 +95,17 @@ describe('ConnectionRequest child errors', () => {
 });
 
 describe('ConnectionRequest lifecycle', () => {
+  it('presents preparation in the PostgreSQL manager shell', () => {
+    const wire = { close: vi.fn() } as unknown as Wire;
+    const caller = {
+      getResource: vi.fn().mockReturnValue(new Promise(() => undefined)),
+    } as unknown as RPCCaller;
+
+    render(<ConnectionRequest {...baseProps(caller, wire)} />);
+    expect(screen.getByRole('heading', { name: 'PostgreSQL manager' })).toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('Preparing PostgreSQL connection');
+  });
+
   it('does not restart an active creation flow when rerendered with the same request', async () => {
     let resolveResource: (value: unknown) => void = () => undefined;
     const resourceRequest = new Promise((resolve) => { resolveResource = resolve; });

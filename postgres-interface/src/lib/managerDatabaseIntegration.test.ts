@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { RPCCaller } from '@ezenki/deploy-commander-installer-interface';
+import { initializeManagerDatabase } from './managerDatabase';
 import {
   createPrimaryState,
   deletePrimaryState,
@@ -8,6 +9,13 @@ import {
   transitionPrimaryState,
   type PrimaryState,
 } from './primaryState';
+import {
+  acquireOperation,
+  deleteOperation,
+  readOperation,
+  transitionOperation,
+  type ConnectionOperation,
+} from './provisioningJournal';
 
 const harnessModule = process.env.MANAGER_DATABASE_HARNESS_MODULE;
 
@@ -29,9 +37,25 @@ const state: PrimaryState = {
   updatedAt: '2026-08-30T00:00:00.000Z',
 };
 
+const operation: ConnectionOperation = {
+  kind: 'connection',
+  operationId: 'integration-operation',
+  callerId: 'integration-caller',
+  resourceId: 'integration-resource',
+  database: 'db_integration',
+  username: 'pg_user_integration',
+  phase: 'prepared',
+  cleanupReason: null,
+  provisionRunId: null,
+  cleanupRunId: null,
+  createdAt: '2026-08-30T00:00:00.000Z',
+  updatedAt: '2026-08-30T00:00:00.000Z',
+};
+
 describe.skipIf(!harnessModule)('opt-in manager database contract', () => {
   it('supports atomic state create, read, CAS, and delete shapes', async () => {
     const caller = await loadCaller();
+    await initializeManagerDatabase(caller);
     try {
       await createPrimaryState(caller, state);
       const read = await readPrimaryState(caller);
@@ -50,6 +74,35 @@ describe.skipIf(!harnessModule)('opt-in manager database contract', () => {
       await caller.databaseQuery(
         'DELETE postgres_operation:current WHERE operation_id = $operation_id RETURN VALUE operation_id;',
         { operation_id: 'integration-operation' },
+      ).catch(() => undefined);
+    }
+  });
+
+  it('supports operation journal create, read, CAS, and delete shapes', async () => {
+    const caller = await loadCaller();
+    await initializeManagerDatabase(caller);
+    try {
+      await acquireOperation(caller, operation);
+      await expect(readOperation(caller)).resolves.toMatchObject({
+        operationId: operation.operationId,
+        phase: 'prepared',
+      });
+      await transitionOperation(
+        caller,
+        operation.operationId,
+        'prepared',
+        { phase: 'provision-starting', updatedAt: '2026-08-30T00:00:01.000Z' },
+      );
+      await expect(readOperation(caller)).resolves.toMatchObject({
+        operationId: operation.operationId,
+        phase: 'provision-starting',
+      });
+      await deleteOperation(caller, operation.operationId);
+      await expect(readOperation(caller)).resolves.toBeNull();
+    } finally {
+      await caller.databaseQuery(
+        'DELETE postgres_operation:current WHERE operation_id = $operation_id RETURN VALUE operation_id;',
+        { operation_id: operation.operationId },
       ).catch(() => undefined);
     }
   });

@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
+import ActionButton from './ActionButton';
+import useDialogFocus from './useDialogFocus';
 
 export interface PermissionDialogProps {
   callerId: string;
@@ -7,15 +9,6 @@ export interface PermissionDialogProps {
   onCancel: () => void;
 }
 
-const FOCUSABLE_SELECTOR = [
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[href]',
-  '[tabindex]:not([tabindex="-1"])',
-].join(', ');
-
 export function PermissionDialog({
   callerId,
   busy,
@@ -23,59 +16,10 @@ export function PermissionDialog({
   onCancel,
 }: PermissionDialogProps) {
   const [remember, setRemember] = useState(false);
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const busyRef = useRef(busy);
-  const cancelRef = useRef(onCancel);
-  busyRef.current = busy;
-  cancelRef.current = onCancel;
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return undefined;
-
-    const previouslyFocused = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    dialog.focus();
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        if (!busyRef.current) {
-          event.preventDefault();
-          cancelRef.current();
-        }
-        return;
-      }
-
-      if (event.key !== 'Tab') return;
-      const elements = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
-      if (elements.length === 0) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      const activeIsFocusable = elements.includes(document.activeElement as HTMLElement);
-      if (event.shiftKey && (document.activeElement === first || !activeIsFocusable)) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || !activeIsFocusable)) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-
-    dialog.addEventListener('keydown', handleKeyDown);
-    return () => {
-      dialog.removeEventListener('keydown', handleKeyDown);
-      previouslyFocused?.focus();
-    };
-  }, []);
+  const dialogRef = useDialogFocus<HTMLDivElement>(!busy, onCancel);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/60 p-4 backdrop-blur-sm">
       <div
         ref={dialogRef}
         role="dialog"
@@ -84,37 +28,42 @@ export function PermissionDialog({
         tabIndex={-1}
         aria-labelledby="permission-dialog-title"
         aria-describedby="permission-dialog-description"
-        className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-indigo-100 bg-white p-6 shadow-2xl outline-none sm:p-7"
       >
-        <h2 id="permission-dialog-title" className="text-xl font-semibold">
+        <p className="text-xs font-bold uppercase tracking-[0.16em] text-indigo-700">Permission request</p>
+        <h2 id="permission-dialog-title" className="mt-2 text-2xl font-semibold tracking-tight">
           Allow PostgreSQL connection?
         </h2>
-        <p id="permission-dialog-description" className="mt-3 text-sm text-gray-700">
-          The calling manager <span className="font-mono">{callerId}</span> requests a logical database and credentials from this PostgreSQL installation.
+        <p id="permission-dialog-description" className="mt-3 text-sm leading-6 text-slate-600">
+          The calling manager
+          <span
+            data-testid="calling-manager-id"
+            className="mt-2 block break-all rounded-lg bg-slate-100 px-3 py-2 font-mono text-xs text-slate-800"
+          >
+            {callerId}
+          </span>
+          requests a logical database and credentials from this PostgreSQL installation.
         </p>
-        <label className="mt-4 flex items-start gap-2 text-sm text-gray-700">
+        <label className="mt-5 flex items-start gap-2 text-sm leading-6 text-slate-700">
           <input
             type="checkbox"
             checked={remember}
             disabled={busy}
             onChange={(event) => setRemember(event.target.checked)}
+            className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
           />
           <span>
             Don&apos;t ask me again. This gives installation-wide approval for all future callers.
           </span>
         </label>
         {busy && (
-          <p role="status" aria-live="polite" className="mt-4 text-sm text-gray-700">
+          <p role="status" aria-live="polite" className="mt-4 text-sm font-medium text-indigo-700">
             Requesting access…
           </p>
         )}
-        <div className="mt-6 flex justify-end gap-3">
-          <button type="button" disabled={busy} onClick={onCancel} className="rounded border px-4 py-2">
-            Cancel
-          </button>
-          <button type="button" disabled={busy} onClick={() => onAllow(remember)} className="rounded bg-blue-600 px-4 py-2 text-white">
-            Allow
-          </button>
+        <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+          <ActionButton tone="secondary" disabled={busy} onClick={onCancel}>Cancel</ActionButton>
+          <ActionButton tone="primary" disabled={busy} onClick={() => onAllow(remember)}>Allow</ActionButton>
         </div>
       </div>
     </div>
