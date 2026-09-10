@@ -11,6 +11,7 @@ Implemented explicit lifecycle action state across the dashboard and app:
 - Added non-secret ready-state operational details and a rose-tinted teardown danger zone; credentials remain unrendered.
 - Updated `App` action tracking to preserve action kind, abort behavior, refresh handling, and safe error mapping.
 - Added dashboard coverage for explicit progress and single-error rendering, and updated persisted recovery expectations.
+- Fixed the transient action-error lifecycle so a successful recovery refresh cannot leave a stale error panel hiding recovered controls.
 
 ## Verification
 
@@ -18,6 +19,8 @@ From `postgres-interface/`:
 
 - `npx vitest run src/components/ManagerDashboard.test.tsx` — initially failed for the new contract, then passed after implementation.
 - `npx vitest run src/components/ManagerDashboard.test.tsx src/App.test.tsx` — 23 tests passed.
+- `npx vitest run src/App.test.tsx -t "clears a failed lifecycle action"` — regression test passed after reproducing the stale-error failure.
+- `npx vitest run src/components/ManagerDashboard.test.tsx src/App.test.tsx` — 24 tests passed after the fix.
 - `npx eslint src/App.tsx src/components/ManagerDashboard.tsx src/components/ManagerDashboard.test.tsx` — passed.
 - `npx tsc --noEmit` — passed.
 - `git diff --check` — passed.
@@ -25,6 +28,7 @@ From `postgres-interface/`:
 ## Commits
 
 - `9d7c6d3 feat: present explicit PostgreSQL lifecycle states`
+- `c66cb2f fix: clear lifecycle errors on manager refresh`
 
 ## Scope
 
