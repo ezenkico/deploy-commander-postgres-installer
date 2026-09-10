@@ -92,6 +92,29 @@ describe('App lifecycle and resource routing', () => {
     expect(queries.findIndex((query) => query.startsWith('SELECT'))).toBeGreaterThan(1);
   });
 
+  it('initializes both tables before the first child recovery read', async () => {
+    const queries: string[] = [];
+    const current = appClient({
+      getCallingManager: vi.fn().mockResolvedValue('calling-manager'),
+      getMyResources: vi.fn().mockResolvedValue({
+        items: [{ id: 'resource-1', type: 'postgres', name: 'postgres', external: false }],
+        limit: 50, offset: 0, total: 1,
+      }),
+      databaseQuery: vi.fn().mockImplementation(async (query: string) => {
+        queries.push(query);
+        if (query.startsWith('SELECT phase')) return databaseResult([primary]);
+        return databaseResult([]);
+      }),
+    }, { action: 'create-connection' });
+
+    render(<App createClient={() => current} />);
+    await waitFor(() => expect(queries.some((query) => query.startsWith('SELECT kind'))).toBe(true));
+
+    const firstRecoveryRead = queries.findIndex((query) => query.startsWith('SELECT kind'));
+    expect(firstRecoveryRead).toBeGreaterThan(1);
+    expect(queries.slice(0, firstRecoveryRead)).toEqual([STATE_DEFINITION, OPERATION_DEFINITION]);
+  });
+
   it('shows a fixed retryable storage error in root mode', async () => {
     let stateDefinitions = 0;
     const current = appClient({
