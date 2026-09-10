@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { RPC, type Events } from '@ezenki/deploy-commander-installer-interface';
-import ManagerDashboard from './components/ManagerDashboard';
+import ManagerDashboard, { type LifecycleAction } from './components/ManagerDashboard';
 import ConnectionRequest from './components/ConnectionRequest';
 import { createInterfaceClient } from './lib/interfaceClient';
 import { createRunEventSource } from './lib/runMonitor';
@@ -97,7 +97,7 @@ interface AppPresentation {
 
 export default function App({ createClient = productionClient }: AppProps) {
   const [presentation, setPresentation] = useState<AppPresentation | null>(null);
-  const [actionBusy, setActionBusy] = useState(false);
+  const [activeAction, setActiveAction] = useState<LifecycleAction>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const clientRef = useRef<AppClient | null>(null);
@@ -246,11 +246,14 @@ export default function App({ createClient = productionClient }: AppProps) {
   const appClient = client;
   const storage = typeof window !== 'undefined' ? window.localStorage : undefined;
   const permissionRemembered = Boolean(view.resource && storage && isPermissionRemembered(storage, manager, view.resource.id));
-  const runAction = async (action: (signal: AbortSignal) => Promise<void>) => {
-    if (actionBusy) return;
+  const runAction = async (
+    kind: Exclude<LifecycleAction, null>,
+    action: (signal: AbortSignal) => Promise<void>,
+  ) => {
+    if (activeAction !== null) return;
     const controller = new AbortController();
     actionControllerRef.current = controller;
-    setActionBusy(true);
+    setActiveAction(kind);
     setActionError(null);
     try {
       await action(controller.signal);
@@ -264,18 +267,18 @@ export default function App({ createClient = productionClient }: AppProps) {
       if (actionControllerRef.current === controller) {
         actionControllerRef.current = null;
       }
-      setActionBusy(false);
+      setActiveAction(null);
     }
   };
   return <ManagerDashboard
     resource={view.resource}
     primary={view.primary}
-    busy={actionBusy}
+    activeAction={activeAction}
     error={actionError ?? view.error}
     permissionRemembered={permissionRemembered}
     resourceAmbiguous={view.ambiguous}
     onInstall={() => {
-      void runAction((signal) => installPostgres({
+      void runAction('install', (signal) => installPostgres({
         caller: appClient.caller,
         events: appClient.events,
         signal,
@@ -284,7 +287,7 @@ export default function App({ createClient = productionClient }: AppProps) {
     onTeardown={() => {
       const resource = view.resource;
       if (!resource) return;
-      void runAction((signal) => teardownPostgres({
+      void runAction('teardown', (signal) => teardownPostgres({
         caller: appClient.caller,
         events: appClient.events,
         signal,

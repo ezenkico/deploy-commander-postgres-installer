@@ -1,10 +1,15 @@
 import type { RPC } from '@ezenki/deploy-commander-installer-interface';
+import ActionButton from './ActionButton';
+import ManagerShell, { type ShellBadgeTone } from './ManagerShell';
+import StatusPanel from './StatusPanel';
 import type { PrimaryState } from '../lib/primaryState';
+
+export type LifecycleAction = 'install' | 'teardown' | null;
 
 export interface ManagerDashboardProps {
   resource: RPC.ResourceItem | null;
   primary: PrimaryState | null;
-  busy: boolean;
+  activeAction: LifecycleAction;
   error: string | null;
   permissionRemembered: boolean;
   onInstall: () => void;
@@ -20,17 +25,10 @@ function isReady(resource: RPC.ResourceItem | null, primary: PrimaryState | null
     && primary.resourceId === resource.id;
 }
 
-function buttonClass(kind: 'primary' | 'secondary' | 'danger'): string {
-  const base = 'inline-flex items-center justify-center rounded-lg px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
-  if (kind === 'danger') return `${base} bg-rose-600 text-white hover:bg-rose-700 focus:ring-rose-500`;
-  if (kind === 'secondary') return `${base} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 focus:ring-slate-400`;
-  return `${base} bg-indigo-600 text-white hover:bg-indigo-700 focus:ring-indigo-500`;
-}
-
 export default function ManagerDashboard({
   resource,
   primary,
-  busy,
+  activeAction,
   error,
   permissionRemembered,
   onInstall,
@@ -39,102 +37,125 @@ export default function ManagerDashboard({
   onResetPermission,
   resourceAmbiguous = false,
 }: ManagerDashboardProps) {
+  const busy = activeAction !== null;
   const ready = isReady(resource, primary);
   const legacy = resource !== null && primary === null;
-  const teardownFailed = resource !== null && primary?.phase === 'teardown-failed' && primary.resourceId === resource.id;
-  const recovery = Boolean(error) || resourceAmbiguous || (!ready && !legacy && (resource !== null || primary !== null));
+  const teardownFailed = resource !== null
+    && primary?.phase === 'teardown-failed'
+    && primary.resourceId === resource.id;
+  const recovery = resourceAmbiguous || (!ready && !legacy && (resource !== null || primary !== null));
+
+  let badge: { label: string; tone: ShellBadgeTone };
+  if (activeAction === 'install') {
+    badge = { label: 'Installing', tone: 'progress' };
+  } else if (activeAction === 'teardown') {
+    badge = { label: 'Tearing down', tone: 'progress' };
+  } else if (ready) {
+    badge = { label: 'Ready', tone: 'success' };
+  } else if (resourceAmbiguous || error) {
+    badge = { label: 'Attention', tone: 'danger' };
+  } else if (teardownFailed || recovery) {
+    badge = { label: 'Recovery', tone: 'warning' };
+  } else if (legacy) {
+    badge = { label: 'Attention', tone: 'warning' };
+  } else {
+    badge = { label: 'Not installed', tone: 'neutral' };
+  }
 
   let content;
-  if (resourceAmbiguous) {
+  if (activeAction === 'install') {
     content = (
-      <section role="alert" className="rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
-        <h2 className="text-xl font-semibold text-slate-900">PostgreSQL resource state is ambiguous</h2>
-        <p className="mt-3 text-sm text-rose-700">Multiple PostgreSQL resources were found. Teardown and reinstall are required.</p>
-        <button type="button" disabled={busy} onClick={onRetry} className={`${buttonClass('secondary')} mt-6`}>Retry recovery</button>
-      </section>
+      <StatusPanel tone="progress" eyebrow="Installation in progress" title="Installing PostgreSQL" role="status">
+        The shared service and persistent storage are being prepared. This can take a few minutes.
+      </StatusPanel>
     );
-  } else if (error || busy) {
+  } else if (activeAction === 'teardown') {
     content = (
-      <section className="rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
-        <p className="text-sm font-medium uppercase tracking-wide text-amber-700">Recovery</p>
-        <h2 className="mt-1 text-2xl font-semibold text-slate-900">PostgreSQL installation needs recovery</h2>
-        <p className="mt-3 text-sm text-amber-800">{error ?? 'The installation state is incomplete. A PostgreSQL operation is still in progress.'}</p>
-        <button type="button" disabled={busy} onClick={onRetry} className={`${buttonClass('secondary')} mt-6`}>Retry recovery</button>
-      </section>
+      <StatusPanel tone="progress" eyebrow="Teardown in progress" title="Tearing down PostgreSQL" role="status">
+        The shared service and its logical databases are being removed safely.
+      </StatusPanel>
+    );
+  } else if (resourceAmbiguous) {
+    content = (
+      <StatusPanel tone="danger" eyebrow="Attention required" title="PostgreSQL resource state is ambiguous" role="alert" actions={(
+        <ActionButton tone="secondary" disabled={busy} onClick={onRetry}>Retry recovery</ActionButton>
+      )}>
+        Multiple PostgreSQL resources were found. Teardown and reinstall are required.
+      </StatusPanel>
+    );
+  } else if (error) {
+    content = (
+      <StatusPanel tone="danger" eyebrow="Attention required" title="PostgreSQL manager needs attention" role="alert" actions={(
+        <ActionButton tone="secondary" disabled={busy} onClick={onRetry}>Retry recovery</ActionButton>
+      )}>
+        {error}
+      </StatusPanel>
     );
   } else if (teardownFailed) {
     content = (
-      <section className="rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
-        <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Teardown failed</p>
-        <h2 className="mt-1 text-2xl font-semibold text-slate-900">PostgreSQL teardown needs retrying</h2>
-        <p className="mt-3 text-sm text-rose-800">The previous teardown run failed. Retry teardown to remove this installation safely.</p>
-        <button type="button" disabled={busy} onClick={onTeardown} className={`${buttonClass('danger')} mt-6`}>Retry teardown</button>
-      </section>
+      <StatusPanel tone="danger" eyebrow="Teardown failed" title="PostgreSQL teardown needs retrying" role="alert" actions={(
+        <ActionButton tone="danger" disabled={busy} onClick={onTeardown}>Retry teardown</ActionButton>
+      )}>
+        The previous teardown run failed. Retry teardown to remove this installation safely.
+      </StatusPanel>
     );
   } else if (ready) {
     content = (
-      <section className="rounded-2xl border border-emerald-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-emerald-700">PostgreSQL service</p>
-            <h2 className="mt-1 text-2xl font-semibold text-slate-900">PostgreSQL is installed</h2>
+      <StatusPanel tone="success" eyebrow="PostgreSQL service" title="PostgreSQL is installed">
+        <p>The service is ready for logical database connections.</p>
+        <dl className="mt-5 grid gap-4 rounded-xl bg-slate-50 p-4 sm:grid-cols-2">
+          <div className="min-w-0">
+            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Resource</dt>
+            <dd className="mt-1 break-all font-mono text-sm text-slate-800">{resource?.id}</dd>
           </div>
-          <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">Ready</span>
-        </div>
-        <p className="mt-4 text-sm text-slate-600">The service is ready for logical database connections.</p>
-        <p className="mt-3 text-xs text-slate-500">Resource: <span className="font-mono">{resource?.id}</span></p>
-        {permissionRemembered && <p className="mt-2 text-sm text-slate-600">Installation-wide connection approval is remembered.</p>}
-        <div className="mt-5 flex flex-wrap items-center gap-3">
-          <button type="button" disabled={busy} onClick={onTeardown} className={buttonClass('danger')}>Teardown PostgreSQL</button>
-          {permissionRemembered ? (
-            <button type="button" disabled={busy} onClick={onResetPermission} className={buttonClass('secondary')}>
+          <div>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Connection approval</dt>
+            <dd className="mt-1 text-sm text-slate-800">
+              {permissionRemembered ? 'Remembered for this installation' : 'Requested for each caller'}
+            </dd>
+          </div>
+        </dl>
+        {permissionRemembered && (
+          <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:flex-wrap">
+            <ActionButton tone="secondary" disabled={busy} onClick={onResetPermission}>
               Reset remembered connection approval
-            </button>
-          ) : (
-            <span className="text-sm text-slate-500">Connection approval is requested per caller.</span>
-          )}
+            </ActionButton>
+          </div>
+        )}
+        <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 p-4">
+          <h3 className="text-sm font-semibold text-rose-900">Danger zone</h3>
+          <p className="mt-1 text-sm text-rose-800">Remove the shared service and its logical databases.</p>
+          <ActionButton tone="danger" className="mt-4" disabled={busy} onClick={onTeardown}>
+            Teardown PostgreSQL
+          </ActionButton>
         </div>
-      </section>
+      </StatusPanel>
     );
   } else if (legacy) {
     content = (
-      <section className="rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
-        <p className="text-sm font-medium uppercase tracking-wide text-amber-700">Action required</p>
-        <h2 className="mt-1 text-2xl font-semibold text-slate-900">PostgreSQL requires reinstall</h2>
-        <p className="mt-3 text-sm text-amber-800">This installation predates private administrator state. Teardown and reinstall are required.</p>
-        <button type="button" disabled={busy} onClick={onTeardown} className={`${buttonClass('danger')} mt-6`}>Teardown PostgreSQL</button>
-      </section>
+      <StatusPanel tone="warning" eyebrow="Action required" title="PostgreSQL requires reinstall" role="alert" actions={(
+        <ActionButton tone="danger" disabled={busy} onClick={onTeardown}>Teardown PostgreSQL</ActionButton>
+      )}>
+        This installation predates private administrator state. Teardown and reinstall are required.
+      </StatusPanel>
     );
   } else if (recovery) {
     content = (
-      <section className="rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
-        <p className="text-sm font-medium uppercase tracking-wide text-amber-700">Recovery</p>
-        <h2 className="mt-1 text-2xl font-semibold text-slate-900">PostgreSQL installation needs recovery</h2>
-        <p className="mt-3 text-sm text-amber-800">The installation state is incomplete. Resolve recovery before starting another operation.</p>
-        <button type="button" disabled={busy} onClick={onRetry} className={`${buttonClass('secondary')} mt-6`}>Retry recovery</button>
-      </section>
+      <StatusPanel tone="warning" eyebrow="Recovery" title="PostgreSQL installation needs recovery" role="alert" actions={(
+        <ActionButton tone="secondary" disabled={busy} onClick={onRetry}>Retry recovery</ActionButton>
+      )}>
+        The installation state is incomplete. Resolve recovery before starting another operation.
+      </StatusPanel>
     );
   } else {
     content = (
-      <section className="rounded-2xl border border-indigo-200 bg-white p-6 shadow-sm">
-        <p className="text-sm font-medium uppercase tracking-wide text-indigo-700">PostgreSQL service</p>
-        <h2 className="mt-1 text-2xl font-semibold text-slate-900">Install PostgreSQL</h2>
-        <p className="mt-3 text-sm text-slate-600">Install a private PostgreSQL service with persistent storage.</p>
-        <button type="button" disabled={busy} onClick={onInstall} className={`${buttonClass('primary')} mt-6`}>Install PostgreSQL</button>
-      </section>
+      <StatusPanel tone="neutral" eyebrow="PostgreSQL service" title="Install PostgreSQL" actions={(
+        <ActionButton tone="primary" disabled={busy} onClick={onInstall}>Install PostgreSQL</ActionButton>
+      )}>
+        Install a private PostgreSQL service with persistent storage.
+      </StatusPanel>
     );
   }
 
-  return (
-    <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 lg:px-8" aria-busy={busy}>
-      <header className="mb-6">
-        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-indigo-600">Deploy Commander</p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">PostgreSQL manager</h1>
-        <p className="mt-2 text-sm text-slate-600">Manage the shared service and its logical connections.</p>
-      </header>
-      {busy && <p role="status" aria-live="polite" className="mb-4 rounded-lg bg-slate-100 px-4 py-3 text-sm text-slate-700">Working…</p>}
-      {error && <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</p>}
-      {content}
-    </main>
-  );
+  return <ManagerShell badge={badge}>{content}</ManagerShell>;
 }
