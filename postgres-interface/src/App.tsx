@@ -34,7 +34,11 @@ function managerId(value: unknown): string | null {
 
 function bootErrorMessage(error: unknown): string {
   if (error instanceof ManagerDatabaseInitializationError) return error.message;
-  if (error instanceof Error && error.message === 'Unable to identify the PostgreSQL manager') {
+  if (error instanceof Error && [
+    'Unable to identify the PostgreSQL manager',
+    'PostgreSQL recovery is required',
+    'PostgreSQL lifecycle recovery is required',
+  ].includes(error.message)) {
     return error.message;
   }
   return 'Unable to load PostgreSQL manager state';
