@@ -651,6 +651,60 @@ The current interface manager is treated as the resource-owning manager.
 
 The resource-owner identity is injected by Deploy Commander and cannot be overridden by the embedded frontend.
 
+### Update a Connection
+
+```ts
+const result = await caller.updateConnection(
+  connectionId,
+  {
+    username: "updated-user",
+    password: updatedPassword,
+  }
+);
+```
+
+Signature:
+
+```ts
+updateConnection(
+  id: string,
+  metadata: any
+): Promise<UpdateConnection>
+```
+
+Returns:
+
+```ts
+{
+  connection: ConnectionItem;
+  config: {
+    id: string;
+    resource: string;
+    manager: string;
+    external: boolean;
+    metadata: any;
+    created_at: string;
+    updated_at: string;
+  };
+}
+```
+
+The payload contains exactly `id` and `metadata`. Deploy Commander injects the trusted current manager identity when authorizing the update.
+
+### Delete a Connection
+
+```ts
+await caller.deleteConnection(connectionId);
+```
+
+Signature:
+
+```ts
+deleteConnection(id: string): Promise<void>
+```
+
+The payload contains only `id`, and a successful response contains no data. Deploy Commander injects the trusted current manager identity when authorizing the deletion.
+
 ## Checking for an Existing Connection
 
 Before creating a connection, use `getConnections` with manager and resource filters.
@@ -700,11 +754,11 @@ The method signature is:
 ```ts
 databaseQuery(
   query: string,
-  bindings: { [key: string]: any }
+  bindings?: Record<string, unknown>
 ): Promise<DatabaseQueryResult>
 ```
 
-`query` is SurrealQL. Each entry in `bindings` is bound to the SurrealQL variable with the same name. In the example, `$status` receives the value of `bindings.status`. Use bindings for application values instead of constructing queries through string interpolation. Pass `{}` when the query has no variables.
+`query` is SurrealQL. Each entry in `bindings` is bound to the SurrealQL variable with the same name. In the example, `$status` receives the value of `bindings.status`. Use bindings for application values instead of constructing queries through string interpolation. Omit `bindings` when the query has no variables.
 
 The response contains the result of each statement in the query:
 
@@ -712,12 +766,14 @@ The response contains the result of each statement in the query:
 interface DatabaseQueryResult {
   results: Array<{
     statement: number;
+    status: "OK" | "ERR";
+    time: string;
     result: unknown;
   }>;
 }
 ```
 
-The exact value of each `result` depends on the SurrealQL statement that produced it.
+The exact value of each `result` depends on the SurrealQL statement that produced it. A statement with `status: "ERR"` is returned as part of a successful RPC response; inspect every statement status. Transport, protocol, and policy failures still reject the call.
 
 ## Manager Tokens
 
@@ -1378,6 +1434,8 @@ Keep these rules visible when implementing manager workflows:
 * Or attached to resources owned by the current manager
 
 `getConnection(id)` follows the same visibility rule and includes full connection configuration.
+
+`updateConnection(id, metadata)` and `deleteConnection(id)` also rely on this trusted interface context. Their payloads must not include a caller-controlled manager identity.
 
 ### Manager Identity
 
