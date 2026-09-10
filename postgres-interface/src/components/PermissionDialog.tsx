@@ -26,8 +26,14 @@ export function PermissionDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
   const busyRef = useRef(busy);
   const cancelRef = useRef(onCancel);
-  busyRef.current = busy;
-  cancelRef.current = onCancel;
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  useEffect(() => {
+    cancelRef.current = onCancel;
+  }, [onCancel]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
