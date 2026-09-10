@@ -5,6 +5,7 @@ import App, { type AppClientFactory } from './App';
 import { createRunEventSource } from './lib/runMonitor';
 import { recoverConnectionOnBoot, type AppClient } from './lib/appRecovery';
 import { databaseResult } from './test/databaseQuery';
+import * as installationLifecycle from './lib/installationLifecycle';
 
 afterEach(() => cleanup());
 
@@ -55,7 +56,7 @@ describe('App boot recovery call site', () => {
 function appClient(overrides: Partial<RPCCaller> = {}, metadata: unknown = {}) {
   const wire = { close: vi.fn(), end: vi.fn() } as unknown as Wire;
   const caller = {
-    getManager: vi.fn().mockResolvedValue({ id: 'postgres-manager', kind: 'manager', name: 'Postgres' }),
+    getManager: vi.fn().mockResolvedValue('postgres-manager'),
     getMetadata: vi.fn().mockResolvedValue(metadata),
     getCallingManager: vi.fn().mockResolvedValue('calling-manager'),
     getMyResources: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
@@ -65,7 +66,104 @@ function appClient(overrides: Partial<RPCCaller> = {}, metadata: unknown = {}) {
   return { caller, wire, events: createRunEventSource() };
 }
 
+const STATE_DEFINITION =
+  'DEFINE TABLE IF NOT EXISTS postgres_state SCHEMALESS;';
+const OPERATION_DEFINITION =
+  'DEFINE TABLE IF NOT EXISTS postgres_operation SCHEMALESS;';
+
+const databaseError = {
+  results: [{ statement: 0, status: 'ERR', time: '1ms', result: 'private detail' }],
+};
+
 describe('App lifecycle and resource routing', () => {
+  it('initializes both tables before the first recovery read', async () => {
+    const queries: string[] = [];
+    const current = appClient({
+      databaseQuery: vi.fn().mockImplementation(async (query: string) => {
+        queries.push(query);
+        return databaseResult([]);
+      }),
+    });
+
+    render(<App createClient={() => current} />);
+    await screen.findByRole('button', { name: 'Install PostgreSQL' });
+
+    expect(queries.slice(0, 2)).toEqual([STATE_DEFINITION, OPERATION_DEFINITION]);
+    expect(queries.findIndex((query) => query.startsWith('SELECT'))).toBeGreaterThan(1);
+  });
+
+  it('shows a fixed retryable storage error in root mode', async () => {
+    let stateDefinitions = 0;
+    const current = appClient({
+      databaseQuery: vi.fn().mockImplementation(async (query: string) => {
+        if (query === STATE_DEFINITION && stateDefinitions++ === 0) return databaseError;
+        return databaseResult([]);
+      }),
+    });
+    const factory = vi.fn(() => current);
+
+    render(<App createClient={factory} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Unable to initialize PostgreSQL manager storage',
+    );
+    expect(screen.queryByText('private detail')).not.toBeInTheDocument();
+
+    screen.getByRole('button', { name: 'Retry' }).click();
+    await screen.findByRole('button', { name: 'Install PostgreSQL' });
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(current.wire.end).not.toHaveBeenCalled();
+  });
+
+  it('closes child mode once with 503 when storage initialization fails', async () => {
+    const current = appClient({
+      databaseQuery: vi.fn().mockResolvedValue(databaseError),
+    }, { action: 'create-connection' });
+
+    render(<App createClient={() => current} />);
+    await waitFor(() => expect(current.wire.close).toHaveBeenCalledWith({
+      manager: 'postgres-manager',
+      ok: false,
+      error: { status: 503, message: 'PostgreSQL recovery is required' },
+    }));
+    expect(current.wire.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects the obsolete object manager shape without logging it', async () => {
+    const current = appClient({
+      getManager: vi.fn().mockResolvedValue({ id: 'obsolete-manager-shape' }),
+    });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    render(<App createClient={() => current} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Unable to identify the PostgreSQL manager',
+    );
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('aborts an in-flight lifecycle wait when the app unmounts', async () => {
+    let actionSignal: AbortSignal | undefined;
+    vi.spyOn(installationLifecycle, 'installPostgres').mockImplementation(
+      async ({ signal }) => {
+        actionSignal = signal;
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          }, { once: true });
+        });
+      },
+    );
+    const current = appClient();
+    const view = render(<App createClient={() => current} />);
+    await screen.findByRole('button', { name: 'Install PostgreSQL' });
+
+    screen.getByRole('button', { name: 'Install PostgreSQL' }).click();
+    await waitFor(() => expect(actionSignal).toBeDefined());
+    view.unmount();
+
+    expect(actionSignal?.aborted).toBe(true);
+  });
+
   it('uses resource and private state instead of unrelated run events', async () => {
     const client = appClient();
     const factory: AppClientFactory = () => client;

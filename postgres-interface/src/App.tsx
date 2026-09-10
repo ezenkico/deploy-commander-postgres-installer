@@ -11,6 +11,10 @@ import { recoverConnectionOnBoot, type AppClient } from './lib/appRecovery';
 import type { ReadyPrimaryState } from './lib/primaryState';
 import { installPostgres, recoverInstallationOnBoot, recoverTeardownOnBoot, teardownPostgres } from './lib/installationLifecycle';
 import { clearPermission, isPermissionRemembered } from './lib/permissionPreference';
+import {
+  initializeManagerDatabase,
+  ManagerDatabaseInitializationError,
+} from './lib/managerDatabase';
 
 export type AppClientFactory = (onEvent: (event: Events.InterfaceEvent) => void) => AppClient;
 
@@ -25,11 +29,7 @@ type BootView =
   | { kind: 'error'; message: string };
 
 function managerId(value: unknown): string | null {
-  console.log(value);
-  if(typeof value === "string") return value;
-  if (typeof value !== 'object' || value === null) return null;
-  const id = (value as { id?: unknown }).id;
-  return typeof id === 'string' && id.trim().length > 0 ? id : null;
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
 function callerId(value: unknown): string | null {
@@ -76,20 +76,36 @@ async function countPrimaryResources(caller: ReturnType<typeof RPC.SetupRPCCalle
 }
 
 /** The root component keeps one wire/caller pair for its complete lifetime. */
+interface AppPresentation {
+  factory: AppClientFactory;
+  client: AppClient;
+  manager: string;
+  view: BootView;
+}
+
 export default function App({ createClient = productionClient }: AppProps) {
-  const [loading, setLoading] = useState(true);
-  const [manager, setManager] = useState<string | null>(null);
-  const [view, setView] = useState<BootView | null>(null);
+  const [presentation, setPresentation] = useState<AppPresentation | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const clientRef = useRef<AppClient | null>(null);
+  const actionControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    let active = true;
-    const controller = new AbortController();
     const client = createClient(() => undefined);
     clientRef.current = client;
+    return () => {
+      actionControllerRef.current?.abort();
+      client.wire.end();
+      if (clientRef.current === client) clientRef.current = null;
+    };
+  }, [createClient]);
+
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client) return undefined;
+    let active = true;
+    const controller = new AbortController();
 
     const boot = async () => {
       const currentManager = managerId(await client.caller.getManager());
@@ -98,9 +114,24 @@ export default function App({ createClient = productionClient }: AppProps) {
       const connectionMode = isCreateConnectionMetadata(metadata);
 
       if (connectionMode) {
-        const callingManager = callerId(await client.caller.getCallingManager().catch(() => null));
+        const callingManager = callerId(
+          await client.caller.getCallingManager().catch(() => null),
+        );
         if (!callingManager) {
-          return { currentManager, mode: 'connection' as const, resource: null, primary: null, callerId: null, error: 'A calling manager is required', result: null };
+          return {
+            currentManager, mode: 'connection' as const,
+            resource: null, primary: null, callerId: null,
+            error: 'A calling manager is required', result: null,
+          };
+        }
+        try {
+          await initializeManagerDatabase(client.caller);
+        } catch {
+          return {
+            currentManager, mode: 'connection' as const,
+            resource: null, primary: null, callerId: callingManager,
+            error: 'PostgreSQL recovery is required', result: null,
+          };
         }
 
         try {
@@ -126,6 +157,8 @@ export default function App({ createClient = productionClient }: AppProps) {
         }
       }
 
+      await initializeManagerDatabase(client.caller);
+
       // Reconcile installation and teardown state before rendering controls.
       const installRecovery = await recoverInstallationOnBoot({ caller: client.caller, events: client.events, signal: controller.signal });
       const teardownRecovery = await recoverTeardownOnBoot({ caller: client.caller, events: client.events, signal: controller.signal, managerId: currentManager, storage: typeof window !== 'undefined' ? window.localStorage : undefined });
@@ -148,40 +181,83 @@ export default function App({ createClient = productionClient }: AppProps) {
 
     void boot().then((next) => {
       if (!active) return;
-      setManager(next.currentManager);
-      if (next.mode === 'connection') {
-        setView({ kind: 'connection', resource: next.resource, primary: next.primary, callerId: next.callerId, error: next.error, result: next.result });
-      } else {
-        setView({ kind: 'dashboard', resource: next.resource, primary: next.primary, ambiguous: next.ambiguous, error: next.error });
-      }
+      const view: BootView = next.mode === 'connection'
+        ? {
+            kind: 'connection', resource: next.resource, primary: next.primary,
+            callerId: next.callerId, error: next.error, result: next.result,
+          }
+        : {
+            kind: 'dashboard', resource: next.resource, primary: next.primary,
+            ambiguous: next.ambiguous, error: next.error,
+          };
+      setPresentation({
+        factory: createClient,
+        client,
+        manager: next.currentManager,
+        view,
+      });
     }).catch((error: unknown) => {
-      if (active) setView({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to load PostgreSQL manager state' });
-    }).finally(() => {
-      if (active) setLoading(false);
+      if (!active) return;
+      setPresentation({
+        factory: createClient,
+        client,
+        manager: '',
+        view: {
+          kind: 'error',
+          message: error instanceof ManagerDatabaseInitializationError
+            ? error.message
+            : error instanceof Error
+            ? error.message
+            : 'Unable to load PostgreSQL manager state',
+        },
+      });
     });
-
     return () => {
       active = false;
       controller.abort();
-      client.wire.end();
-      if (clientRef.current === client) clientRef.current = null;
     };
   }, [createClient, refreshKey]);
 
-  if (loading || view === null) return <div role="status">Loading</div>;
-  if (view.kind === 'error') return <div role="alert">{view.message}</div>;
-  if (view.kind === 'connection') {
-    return <ConnectionRequest caller={clientRef.current?.caller} events={clientRef.current?.events} wire={clientRef.current?.wire} currentManagerId={manager ?? ''} callingManagerId={view.callerId} resource={view.resource} primary={view.primary} initialError={view.error} initialResult={view.result} />;
+  const requestRefresh = () => {
+    setPresentation(null);
+    setRefreshKey((value) => value + 1);
+  };
+
+  const current = presentation?.factory === createClient ? presentation : null;
+  if (!current) return <div role="status">Loading</div>;
+  const { client, manager, view } = current;
+  if (view.kind === 'error') {
+    return <div>
+      <p role="alert">{view.message}</p>
+      <button type="button" onClick={requestRefresh}>Retry</button>
+    </div>;
   }
-  const appClient = clientRef.current!;
+  if (view.kind === 'connection') {
+    return <ConnectionRequest caller={client.caller} events={client.events} wire={client.wire} currentManagerId={manager} callingManagerId={view.callerId} resource={view.resource} primary={view.primary} initialError={view.error} initialResult={view.result} />;
+  }
+  const appClient = client;
   const storage = typeof window !== 'undefined' ? window.localStorage : undefined;
-  const permissionRemembered = Boolean(manager && view.resource && storage && isPermissionRemembered(storage, manager, view.resource.id));
-  const runAction = async (action: () => Promise<void>) => {
+  const permissionRemembered = Boolean(view.resource && storage && isPermissionRemembered(storage, manager, view.resource.id));
+  const runAction = async (action: (signal: AbortSignal) => Promise<void>) => {
     if (actionBusy) return;
-    setActionBusy(true); setActionError(null);
-    try { await action(); setRefreshKey((value) => value + 1); }
-    catch (error) { setActionError(error instanceof Error && error.message.includes('recovery') ? 'PostgreSQL recovery is required' : 'Unable to complete PostgreSQL lifecycle action'); }
-    finally { setActionBusy(false); }
+    const controller = new AbortController();
+    actionControllerRef.current = controller;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await action(controller.signal);
+      requestRefresh();
+    }
+    catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      setActionError(error instanceof Error && error.message.includes('recovery') ? 'PostgreSQL recovery is required' : 'Unable to complete PostgreSQL lifecycle action');
+    }
+    finally {
+      if (actionControllerRef.current === controller) {
+        actionControllerRef.current = null;
+      }
+      setActionBusy(false);
+    }
   };
   return <ManagerDashboard
     resource={view.resource}
@@ -190,9 +266,30 @@ export default function App({ createClient = productionClient }: AppProps) {
     error={actionError ?? view.error}
     permissionRemembered={permissionRemembered}
     resourceAmbiguous={view.ambiguous}
-    onInstall={() => { void runAction(() => installPostgres({ caller: appClient.caller, events: appClient.events, signal: new AbortController().signal })); }}
-    onTeardown={() => { if (!view.resource) return; void runAction(() => teardownPostgres({ caller: appClient.caller, events: appClient.events, signal: new AbortController().signal, managerId: manager ?? undefined, storage }, view.resource!)); }}
-    onRetry={() => setRefreshKey((value) => value + 1)}
-    onResetPermission={() => { if (manager && view.resource && storage) { clearPermission(storage, manager, view.resource.id); setRefreshKey((value) => value + 1); } }}
+    onInstall={() => {
+      void runAction((signal) => installPostgres({
+        caller: appClient.caller,
+        events: appClient.events,
+        signal,
+      }));
+    }}
+    onTeardown={() => {
+      const resource = view.resource;
+      if (!resource) return;
+      void runAction((signal) => teardownPostgres({
+        caller: appClient.caller,
+        events: appClient.events,
+        signal,
+        managerId: manager || undefined,
+        storage,
+      }, resource));
+    }}
+    onRetry={requestRefresh}
+    onResetPermission={() => {
+      if (view.resource && storage) {
+        clearPermission(storage, manager, view.resource.id);
+        requestRefresh();
+      }
+    }}
   />;
 }
