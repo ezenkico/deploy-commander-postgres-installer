@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RPCCaller } from '@ezenki/deploy-commander-installer-interface';
+import { databaseResult } from '../test/databaseQuery';
 import {
   acquireOperation,
   deleteOperation,
@@ -36,7 +37,7 @@ const teardown: TeardownOperation = {
 
 function callerWithQuery(result: unknown): RPCCaller & { databaseQuery: ReturnType<typeof vi.fn> } {
   return {
-    databaseQuery: vi.fn().mockResolvedValue({ results: [{ statement: 0, result }] }),
+    databaseQuery: vi.fn().mockResolvedValue(databaseResult(result)),
   } as unknown as RPCCaller & { databaseQuery: ReturnType<typeof vi.fn> };
 }
 
@@ -57,13 +58,13 @@ describe('provisioning journal', () => {
     const caller = {
       databaseQuery: vi.fn()
         .mockRejectedValueOnce(new Error('duplicate'))
-        .mockResolvedValueOnce({ results: [{ statement: 0, result: [{
+        .mockResolvedValueOnce(databaseResult([{
           kind: 'connection', operation_id: connection.operationId, caller_id: connection.callerId,
           resource_id: connection.resourceId, database: connection.database, username: connection.username,
           phase: connection.phase, cleanup_reason: connection.cleanupReason,
           provision_run_id: connection.provisionRunId, cleanup_run_id: connection.cleanupRunId,
           created_at: connection.createdAt, updated_at: connection.updatedAt,
-        }] }] }),
+        }])),
     } as unknown as RPCCaller;
 
     await expect(acquireOperation(caller, connection)).rejects.toMatchObject({
@@ -76,7 +77,7 @@ describe('provisioning journal', () => {
     const absent = {
       databaseQuery: vi.fn()
         .mockRejectedValueOnce(new Error('duplicate'))
-        .mockResolvedValueOnce({ results: [{ statement: 0, result: [] }] }),
+        .mockResolvedValueOnce(databaseResult([])),
     } as unknown as RPCCaller;
     await expect(acquireOperation(absent, connection)).rejects.toMatchObject({
       name: 'OperationDatabaseError',
@@ -91,7 +92,9 @@ describe('provisioning journal', () => {
   });
 
   it('strictly reads no record or one discriminated operation record', async () => {
-    await expect(readOperation(callerWithQuery([]))).resolves.toBeNull();
+    const emptyCaller = callerWithQuery([]);
+    await expect(readOperation(emptyCaller)).resolves.toBeNull();
+    expect(emptyCaller.databaseQuery).toHaveBeenCalledWith(expect.stringContaining('SELECT kind, operation_id'));
     await expect(readOperation(callerWithQuery([{
       kind: 'teardown', operation_id: 'operation-2', resource_id: 'resource-1',
       phase: 'teardown-starting', teardown_run_id: null,
@@ -116,6 +119,27 @@ describe('provisioning journal', () => {
       unexpected: 'must not be normalized',
     }]);
     await expect(readOperation(unexpected)).rejects.toThrow('Invalid PostgreSQL operation result');
+  });
+
+  it('maps a resolved database ERR statement to the public database error', async () => {
+    const caller = {
+      databaseQuery: vi.fn().mockResolvedValue({
+        results: [{ statement: 0, status: 'ERR', time: '1ms', result: [{
+          kind: 'connection', operation_id: connection.operationId,
+          caller_id: connection.callerId, resource_id: connection.resourceId,
+          database: connection.database, username: connection.username,
+          phase: connection.phase, cleanup_reason: connection.cleanupReason,
+          provision_run_id: connection.provisionRunId,
+          cleanup_run_id: connection.cleanupRunId,
+          created_at: connection.createdAt, updated_at: connection.updatedAt,
+        }] }],
+      }),
+    } as unknown as RPCCaller;
+
+    await expect(readOperation(caller)).rejects.toMatchObject({
+      name: 'OperationDatabaseError',
+      message: 'PostgreSQL operation database operation failed',
+    });
   });
 
   it('uses an operation-and-phase compare-and-set for legal transitions', async () => {

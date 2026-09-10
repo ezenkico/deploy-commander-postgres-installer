@@ -4,6 +4,7 @@ import type { PlatformConnection } from './postgresContracts';
 import type { ConnectionOperation } from './provisioningJournal';
 import type { ReadyPrimaryState } from './primaryState';
 import { recoverJournalOperation, recoverProvisioning, type ProvisioningRecoveryDeps } from './recoverProvisioning';
+import { databaseResult } from '../test/databaseQuery';
 
 const primary: ReadyPrimaryState = {
   phase: 'ready', operationId: 'primary-1',
@@ -26,7 +27,7 @@ function deps(overrides: Partial<ProvisioningRecoveryDeps> = {}): ProvisioningRe
     getConnections: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
     getRuns: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
     getRun: vi.fn().mockResolvedValue({ run: { id: 'provision-run', status: 1 } }),
-    databaseQuery: vi.fn().mockResolvedValue({ results: [{ statement: 0, result: ['operation-1'] }] }),
+    databaseQuery: vi.fn().mockResolvedValue(databaseResult(['operation-1'])),
     start: vi.fn().mockResolvedValue({ id: 'cleanup-run', queued_at: 'now', status: 0 }),
   } as unknown as RPCCaller;
   return {
@@ -287,11 +288,11 @@ describe('recoverProvisioning', () => {
   it('provides a startup adapter that reads and recovers the journal before new work', async () => {
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>),
-      databaseQuery: vi.fn().mockResolvedValue({ results: [{ statement: 0, result: [] }] }),
+      databaseQuery: vi.fn().mockResolvedValue(databaseResult([])),
     } as unknown as RPCCaller });
     await expect(recoverJournalOperation(d)).resolves.toBeNull();
     expect(d.caller.databaseQuery).toHaveBeenCalledWith(
-      expect.stringContaining('SELECT kind, operation_id'), {},
+      expect.stringContaining('SELECT kind, operation_id'),
     );
   });
 });

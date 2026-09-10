@@ -4,6 +4,7 @@ import type { RPCCaller, Wire } from '@ezenki/deploy-commander-installer-interfa
 import App, { type AppClientFactory } from './App';
 import { createRunEventSource } from './lib/runMonitor';
 import { recoverConnectionOnBoot, type AppClient } from './lib/appRecovery';
+import { databaseResult } from './test/databaseQuery';
 
 afterEach(() => cleanup());
 
@@ -22,9 +23,9 @@ const primary = {
 function client(phase: string): AppClient {
   const caller = {
     databaseQuery: vi.fn().mockImplementation(async (query: string) => {
-      if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ ...operation, phase }] }] };
-      if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primary] }] };
-      return { results: [{ statement: 0, result: ['operation-1'] }] };
+      if (query.startsWith('SELECT kind')) return databaseResult([{ ...operation, phase }]);
+      if (query.startsWith('SELECT phase')) return databaseResult([primary]);
+      return databaseResult(['operation-1']);
     }),
     getMyResources: vi.fn().mockResolvedValue({ items: [{ id: 'resource-1', type: 'postgres', name: 'postgres', external: false }], limit: 50, offset: 0, total: 1 }),
     getResource: vi.fn().mockResolvedValue({ config: { platform_connection: { type: 'Platform', data: { network: 'postgres-network' } } }, resource: {} }),
@@ -58,7 +59,7 @@ function appClient(overrides: Partial<RPCCaller> = {}, metadata: unknown = {}) {
     getMetadata: vi.fn().mockResolvedValue(metadata),
     getCallingManager: vi.fn().mockResolvedValue('calling-manager'),
     getMyResources: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
-    databaseQuery: vi.fn().mockResolvedValue({ results: [{ statement: 0, result: [] }] }),
+    databaseQuery: vi.fn().mockResolvedValue(databaseResult([])),
     ...overrides,
   } as unknown as RPCCaller;
   return { caller, wire, events: createRunEventSource() };
@@ -75,12 +76,10 @@ describe('App lifecycle and resource routing', () => {
   });
 
   it('fails closed when private primary state is unresolved', async () => {
-    const client = appClient({ databaseQuery: vi.fn().mockImplementation(async (query: string) => ({
-      results: [{ statement: 0, result: query.startsWith('SELECT phase') ? [{
+    const client = appClient({ databaseQuery: vi.fn().mockImplementation(async (query: string) => databaseResult(query.startsWith('SELECT phase') ? [{
         phase: 'install-running', operation_id: 'op', admin_username: 'admin', admin_password: 'secret',
         run_id: 'run', resource_id: 'resource', initialized_at: null, updated_at: 'now',
-      }] : [] }],
-    })) });
+      }] : [])) });
     render(<App createClient={() => client} />);
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('recovery is required'));
   });

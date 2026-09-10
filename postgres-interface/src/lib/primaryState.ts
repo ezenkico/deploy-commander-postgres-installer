@@ -137,10 +137,16 @@ function parseStoredState(value: unknown): PrimaryState | null {
   };
 }
 
-async function runQuery(caller: RPCCaller, query: string, bindings: Record<string, unknown>): Promise<unknown> {
+async function runQuery(
+  caller: RPCCaller,
+  query: string,
+  bindings?: Record<string, unknown>,
+): Promise<unknown> {
   let response: unknown;
   try {
-    response = await caller.databaseQuery(query, bindings);
+    response = bindings === undefined
+      ? await caller.databaseQuery(query)
+      : await caller.databaseQuery(query, bindings);
   } catch {
     throw new Error('Primary state database operation failed');
   }
@@ -150,7 +156,14 @@ async function runQuery(caller: RPCCaller, query: string, bindings: Record<strin
     || response.results.length !== 1
     || !isRecord(response.results[0])
     || response.results[0].statement !== 0
+    || typeof response.results[0].time !== 'string'
     || !Object.prototype.hasOwnProperty.call(response.results[0], 'result')) {
+    throw new Error('Invalid primary state database result');
+  }
+  if (response.results[0].status === 'ERR') {
+    throw new Error('Primary state database operation failed');
+  }
+  if (response.results[0].status !== 'OK') {
     throw new Error('Invalid primary state database result');
   }
   return response.results[0].result;
@@ -202,7 +215,7 @@ function transitionValues(next: TransitionInput): {
 }
 
 export async function readPrimaryState(caller: RPCCaller): Promise<PrimaryState | null> {
-  return parseStoredState(await runQuery(caller, READ_QUERY, {}));
+  return parseStoredState(await runQuery(caller, READ_QUERY));
 }
 
 export async function createPrimaryState(caller: RPCCaller, state: PrimaryState): Promise<void> {

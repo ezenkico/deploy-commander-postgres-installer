@@ -5,6 +5,7 @@ import type { PlatformConnection } from './postgresContracts';
 import { PostgresRecoveryRequiredError } from './postgresErrors';
 import { createPostgresConnection, type ConnectionWorkflowDeps } from './createPostgresConnection';
 import type { ReadyPrimaryState } from './primaryState';
+import { databaseResult } from '../test/databaseQuery';
 
 const resource: RPC.ResourceItem = {
   id: 'resource-1', type: 'postgres', name: 'postgres', external: false,
@@ -30,7 +31,7 @@ function request(overrides: Partial<Parameters<typeof createPostgresConnection>[
 function deps(overrides: Partial<ConnectionWorkflowDeps> = {}): ConnectionWorkflowDeps {
   const databaseQuery = vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
     if (query.startsWith('SELECT phase')) {
-      return { results: [{ statement: 0, result: [{
+      return databaseResult([{
         phase: primary.phase,
         operation_id: primary.operationId,
         admin_username: primary.credentials.username,
@@ -39,9 +40,9 @@ function deps(overrides: Partial<ConnectionWorkflowDeps> = {}): ConnectionWorkfl
         resource_id: primary.resourceId,
         initialized_at: primary.initializedAt,
         updated_at: primary.updatedAt,
-      }] }] };
+      }]);
     }
-    return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
+    return databaseResult([bindings.operation_id ?? 'operation-1']);
   });
   return {
     caller: {
@@ -226,12 +227,12 @@ describe('createPostgresConnection successful orchestration', () => {
     let owner: Record<string, unknown> | undefined;
     let acquired = false;
     const databaseQuery = vi.fn().mockImplementation(async (query: string, bindings: Record<string, unknown>) => {
-      if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [{
+      if (query.startsWith('SELECT phase')) return databaseResult([{
         phase: primary.phase, operation_id: primary.operationId,
         admin_username: primary.credentials.username, admin_password: primary.credentials.password,
         run_id: primary.runId, resource_id: primary.resourceId,
         initialized_at: primary.initializedAt, updated_at: primary.updatedAt,
-      }] }] };
+      }]);
       if (query.startsWith('CREATE postgres_operation')) {
         if (acquired) throw new Error('duplicate lock');
         acquired = true;
@@ -241,8 +242,8 @@ describe('createPostgresConnection successful orchestration', () => {
           provision_run_id: null, cleanup_run_id: null, created_at: 'now', updated_at: 'now',
         };
       }
-      if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: owner ? [owner] : [] }] };
-      return { results: [{ statement: 0, result: [bindings.operation_id] }] };
+      if (query.startsWith('SELECT kind')) return databaseResult(owner ? [owner] : []);
+      return databaseResult([bindings.operation_id]);
     });
     const starts = vi.fn().mockImplementation(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -296,8 +297,8 @@ describe('createPostgresConnection successful orchestration', () => {
       getResource: vi.fn().mockResolvedValue({ config: { platform_connection: platform } }),
       createConnection: vi.fn(),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => query.startsWith('SELECT phase')
-        ? { results: [{ statement: 0, result: [{ phase: primary.phase, operation_id: primary.operationId, admin_username: primary.credentials.username, admin_password: primary.credentials.password, run_id: primary.runId, resource_id: primary.resourceId, initialized_at: primary.initializedAt, updated_at: primary.updatedAt }] }] }
-        : { results: [{ statement: 0, result: [bindings.operation_id] }] }),
+        ? databaseResult([{ phase: primary.phase, operation_id: primary.operationId, admin_username: primary.credentials.username, admin_password: primary.credentials.password, run_id: primary.runId, resource_id: primary.resourceId, initialized_at: primary.initializedAt, updated_at: primary.updatedAt }])
+        : databaseResult([bindings.operation_id])),
     } as unknown as RPCCaller, waitForRun });
     await expect(createPostgresConnection(d, request())).resolves.toMatchObject({
       connection: existing,
@@ -340,7 +341,7 @@ describe('createPostgresConnection successful orchestration', () => {
       } as unknown as RPCCaller });
     await expect(createPostgresConnection(d, request())).rejects.toThrow('clean up');
     const cleanupReset = (d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls
-      .find(([, bindings]) => (bindings as Record<string, unknown>).next_phase === 'cleanup-required'
+      .find(([, bindings]) => bindings && (bindings as Record<string, unknown>).next_phase === 'cleanup-required'
         && Object.prototype.hasOwnProperty.call(bindings, 'cleanup_run_id'));
     expect(cleanupReset?.[1]).toMatchObject({ cleanup_run_id: null });
   });
@@ -436,14 +437,14 @@ describe('createPostgresConnection successful orchestration', () => {
     const d = deps({ signal: controller.signal });
     const originalTransition = d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>;
     originalTransition.mockImplementation((query: string, bindings: Record<string, unknown>) => {
-      if (query.startsWith('SELECT phase')) return Promise.resolve({ results: [{ statement: 0, result: [{
+      if (query.startsWith('SELECT phase')) return Promise.resolve(databaseResult([{
         phase: primary.phase, operation_id: primary.operationId,
         admin_username: primary.credentials.username, admin_password: primary.credentials.password,
         run_id: primary.runId, resource_id: primary.resourceId,
         initialized_at: primary.initializedAt, updated_at: primary.updatedAt,
-      }] }] });
+      }]));
       if (query.startsWith('UPDATE postgres_operation') && bindings.next_phase === 'provision-starting') controller.abort();
-      return Promise.resolve({ results: [{ statement: 0, result: [bindings.operation_id] }] });
+      return Promise.resolve(databaseResult([bindings.operation_id]));
     });
     await expect(createPostgresConnection(d, request())).rejects.toMatchObject({ name: 'AbortError' });
     expect(d.caller.start).not.toHaveBeenCalled();

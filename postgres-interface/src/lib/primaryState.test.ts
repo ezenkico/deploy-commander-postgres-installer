@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RPCCaller, RPC } from '@ezenki/deploy-commander-installer-interface';
 import type { AdminCredentials } from './credentials';
+import { databaseResult } from '../test/databaseQuery';
 import {
   createPrimaryState,
   deletePrimaryState,
@@ -32,7 +33,7 @@ const pageResource: RPC.ResourceItem = {
 
 function callerWithQuery(result: unknown): RPCCaller & { databaseQuery: ReturnType<typeof vi.fn> } {
   return {
-    databaseQuery: vi.fn().mockResolvedValue({ results: [{ statement: 0, result }] }),
+    databaseQuery: vi.fn().mockResolvedValue(databaseResult(result)),
   } as unknown as RPCCaller & { databaseQuery: ReturnType<typeof vi.fn> };
 }
 
@@ -85,14 +86,35 @@ describe('primary state', () => {
     });
     expect(caller.databaseQuery).toHaveBeenCalledWith(
       'SELECT phase, operation_id, admin_username, admin_password, run_id, resource_id, initialized_at, updated_at FROM postgres_state:primary;',
-      {},
     );
+  });
+
+  it('rejects a resolved database ERR statement without exposing its result', async () => {
+    const caller = {
+      databaseQuery: vi.fn().mockResolvedValue({
+        results: [{ statement: 0, status: 'ERR', time: '1ms', result: [{
+          phase: 'ready', operation_id: 'operation-1',
+          admin_username: 'admin', admin_password: 'password',
+          run_id: 'run-1', resource_id: 'resource-1',
+          initialized_at: '2026-08-30T00:00:00.000Z',
+          updated_at: '2026-08-30T00:01:00.000Z',
+        }] }],
+      }),
+    } as unknown as RPCCaller;
+
+    await expect(readPrimaryState(caller))
+      .rejects.toThrow('Primary state database operation failed');
+    await expect(readPrimaryState(caller))
+      .rejects.not.toThrow(/admin|password|resource-1/i);
   });
 
   it.each([
     { results: [{ statement: 1, result: [] }] },
     { results: [{ statement: 0, result: [] }, { statement: 1, result: [] }] },
     { results: [] },
+    { results: [{ statement: 0, time: '0s', result: [] }] },
+    { results: [{ statement: 0, status: 'UNKNOWN', time: '0s', result: [] }] },
+    { results: [{ statement: 0, status: 'OK', time: 1, result: [] }] },
   ])('rejects malformed or multi-statement database results without exposing data', async (response) => {
     const caller = {
       databaseQuery: vi.fn().mockResolvedValue(response),
