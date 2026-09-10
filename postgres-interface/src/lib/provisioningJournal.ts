@@ -311,11 +311,13 @@ function parseStoredOperation(value: unknown): OperationRecord | null {
 async function runQuery(
   caller: RPCCaller,
   query: string,
-  bindings: Record<string, unknown>,
+  bindings?: Record<string, unknown>,
 ): Promise<unknown> {
   let response: unknown;
   try {
-    response = await caller.databaseQuery(query, bindings);
+    response = bindings === undefined
+      ? await caller.databaseQuery(query)
+      : await caller.databaseQuery(query, bindings);
   } catch {
     throw new JournalDatabaseError();
   }
@@ -324,6 +326,8 @@ async function runQuery(
     || response.results.length !== 1
     || !isRecord(response.results[0])
     || response.results[0].statement !== 0
+    || response.results[0].status !== 'OK'
+    || typeof response.results[0].time !== 'string'
     || !Object.prototype.hasOwnProperty.call(response.results[0], 'result')) {
     throw new JournalDatabaseError();
   }
@@ -345,7 +349,7 @@ function publicDatabaseError(): OperationDatabaseError {
 
 export async function readOperation(caller: RPCCaller): Promise<OperationRecord | null> {
   try {
-    return parseStoredOperation(await runQuery(caller, READ_QUERY, {}));
+    return parseStoredOperation(await runQuery(caller, READ_QUERY));
   } catch (error) {
     if (error instanceof JournalDatabaseError) throw publicDatabaseError();
     throw error;
@@ -388,7 +392,7 @@ export async function acquireOperation(caller: RPCCaller, operation: OperationRe
   } catch (error) {
     if (!(error instanceof JournalDatabaseError)) throw error;
     try {
-      const existing = parseStoredOperation(await runQuery(caller, READ_QUERY, {}));
+      const existing = parseStoredOperation(await runQuery(caller, READ_QUERY));
       if (existing !== null) throw new OperationBusyError();
     } catch (readError) {
       if (readError instanceof OperationBusyError) throw readError;

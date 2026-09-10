@@ -2,8 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RPCCaller, RPC } from '@ezenki/deploy-commander-installer-interface';
 import { installPostgres, recoverInstallationOnBoot, recoverTeardownOnBoot, teardownPostgres, type InstallationWorkflowDeps } from './installationLifecycle';
 import { createRunEventSource } from './runMonitor';
+import { databaseResult } from '../test/databaseQuery';
 
-const resource: RPC.ResourceItem = { id: 'resource-1', type: 'postgres', name: 'postgres', external: false, created_at: 'now', updated_at: 'now' };
+const resource: RPC.ResourceItem = {
+  id: 'resource-1', type: 'postgres', name: 'postgres', external: false,
+  manager: 'postgres-manager', created_at: 'now', updated_at: 'now',
+};
 const platform = { type: 'Platform' as const, data: { network: 'postgres-network' } };
 const primaryRow = {
   phase: 'ready', operation_id: 'install-1', admin_username: 'pg_admin_0123456789abcdef0123456789abcdef', admin_password: 'secret',
@@ -17,9 +21,9 @@ function deps(overrides: Partial<InstallationWorkflowDeps> = {}): InstallationWo
     getRun: vi.fn().mockResolvedValue({ run: { id: 'run-1', status: 2 } }),
     getRuns: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
     databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-      if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [] }] };
-      if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
-      return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
+      if (query.startsWith('SELECT kind')) return databaseResult([]);
+      if (query.startsWith('SELECT phase')) return databaseResult([]);
+      return databaseResult([bindings.operation_id ?? 'operation-1']);
     }),
     start: vi.fn().mockResolvedValue({ id: 'run-1', status: 0 }),
   } as unknown as RPCCaller;
@@ -37,9 +41,9 @@ describe('installPostgres', () => {
       ...(deps().caller as unknown as Record<string, unknown>),
       getMyResources: vi.fn().mockResolvedValue({ items: [resource], limit: 50, offset: 0, total: 1 }),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [] }] };
-        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
-        return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
+        if (query.startsWith('SELECT kind')) return databaseResult([]);
+        if (query.startsWith('SELECT phase')) return databaseResult([]);
+        return databaseResult([bindings.operation_id ?? 'operation-1']);
       }),
     } as unknown as RPCCaller });
     await expect(installPostgres(d)).rejects.toThrow('already exists');
@@ -52,9 +56,9 @@ describe('installPostgres', () => {
         .mockResolvedValueOnce({ items: [], limit: 50, offset: 0, total: 0 })
         .mockResolvedValueOnce({ items: [resource], limit: 50, offset: 0, total: 1 }),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [] }] };
-        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
-        return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
+        if (query.startsWith('SELECT kind')) return databaseResult([]);
+        if (query.startsWith('SELECT phase')) return databaseResult([]);
+        return databaseResult([bindings.operation_id ?? 'operation-1']);
       }),
     } as unknown as RPCCaller });
     await installPostgres(d);
@@ -67,7 +71,7 @@ describe('installPostgres', () => {
   it('marks a failed run install-failed and does not expose run details', async () => {
     const d = deps({ waitForRun: vi.fn().mockRejectedValue(Object.assign(new Error('private output'), { status: 3 })) });
     await expect(installPostgres(d)).rejects.not.toThrow(/private|secret/i);
-    expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([, b]) => (b as Record<string, unknown>).next_phase === 'install-failed')).toBe(true);
+    expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([, b]) => b && (b as Record<string, unknown>).next_phase === 'install-failed')).toBe(true);
   });
 });
 
@@ -77,8 +81,8 @@ describe('teardownPostgres', () => {
       ...(deps().caller as unknown as Record<string, unknown>),
       getMyResources: vi.fn().mockResolvedValue({ items: [resource], limit: 50, offset: 0, total: 1 }),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primaryRow] }] };
-        return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
+        if (query.startsWith('SELECT phase')) return databaseResult([primaryRow]);
+        return databaseResult([bindings.operation_id ?? 'operation-1']);
       }),
     } as unknown as RPCCaller });
     await teardownPostgres(d, resource);
@@ -92,25 +96,25 @@ describe('teardownPostgres', () => {
       ...(deps().caller as unknown as Record<string, unknown>),
       getMyResources: vi.fn().mockResolvedValue({ items: [resource], limit: 50, offset: 0, total: 1 }),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primaryRow] }] };
-        return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
+        if (query.startsWith('SELECT phase')) return databaseResult([primaryRow]);
+        return databaseResult([bindings.operation_id ?? 'operation-1']);
       }),
     } as unknown as RPCCaller, waitForRun: vi.fn().mockRejectedValue(new Error('temporary')) });
     await expect(teardownPostgres(d, resource)).rejects.toThrow('teardown');
-    expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([, b]) => (b as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
+    expect((d.caller.databaseQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([, b]) => b && (b as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
   });
 
   it('retains the teardown journal when scoped permission cleanup fails', async () => {
     const databaseQuery = vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-      if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primaryRow] }] };
-      return { results: [{ statement: 0, result: [bindings.operation_id ?? 'operation-1'] }] };
+      if (query.startsWith('SELECT phase')) return databaseResult([primaryRow]);
+      return databaseResult([bindings.operation_id ?? 'operation-1']);
     });
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>),
       getMyResources: vi.fn().mockResolvedValue({ items: [resource], limit: 50, offset: 0, total: 1 }), databaseQuery,
     } as unknown as RPCCaller, storage: { removeItem: vi.fn(() => { throw new Error('storage unavailable'); }) } as unknown as Storage });
     await expect(teardownPostgres(d, resource)).rejects.toThrow('lifecycle recovery is required');
-    expect(databaseQuery.mock.calls.some(([, bindings]) => (bindings as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
+    expect(databaseQuery.mock.calls.some(([, bindings]) => bindings && (bindings as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
   });
 });
 
@@ -119,10 +123,10 @@ describe('lifecycle boot recovery', () => {
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [{
+        if (query.startsWith('SELECT phase')) return databaseResult([{
           phase: 'install-prepared', operation_id: 'install-1', admin_username: 'pg_admin_0123456789abcdef0123456789abcdef', admin_password: 'secret', run_id: null, resource_id: null, initialized_at: null, updated_at: 'now',
-        }] }] };
-        return { results: [{ statement: 0, result: [bindings.operation_id ?? 'install-1'] }] };
+        }]);
+        return databaseResult([bindings.operation_id ?? 'install-1']);
       }),
       getRuns: vi.fn().mockResolvedValue({ items: [{ id: 'install-run', action: 'create', note: 'postgres-install:install-1' }], limit: 50, offset: 0, total: 1 }),
       getRun: vi.fn().mockResolvedValue({ run: { id: 'install-run', status: 1 } }),
@@ -135,9 +139,9 @@ describe('lifecycle boot recovery', () => {
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>),
       databaseQuery: vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-running', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }] }] };
-        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primaryRow] }] };
-        return { results: [{ statement: 0, result: [bindings.operation_id ?? 'tear-1'] }] };
+        if (query.startsWith('SELECT kind')) return databaseResult([{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-running', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }]);
+        if (query.startsWith('SELECT phase')) return databaseResult([primaryRow]);
+        return databaseResult([bindings.operation_id ?? 'tear-1']);
       }),
       getRun: vi.fn().mockResolvedValue({ run: { id: 'tear-run', status: 2 } }),
     } as unknown as RPCCaller });
@@ -147,26 +151,26 @@ describe('lifecycle boot recovery', () => {
 
   it('does not release a recovered teardown until permission cleanup succeeds', async () => {
     const databaseQuery = vi.fn().mockImplementation((query: string, bindings: Record<string, unknown>) => {
-      if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-running', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }] }] };
-      if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [primaryRow] }] };
-      return { results: [{ statement: 0, result: [bindings.operation_id ?? 'tear-1'] }] };
+      if (query.startsWith('SELECT kind')) return databaseResult([{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-running', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }]);
+      if (query.startsWith('SELECT phase')) return databaseResult([primaryRow]);
+      return databaseResult([bindings.operation_id ?? 'tear-1']);
     });
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>), databaseQuery,
       getRun: vi.fn().mockResolvedValue({ run: { id: 'tear-run', status: 2 } }),
     } as unknown as RPCCaller, storage: { removeItem: vi.fn(() => { throw new Error('storage unavailable'); }) } as unknown as Storage });
     await expect(recoverTeardownOnBoot(d)).rejects.toThrow('lifecycle recovery is required');
-    expect(databaseQuery.mock.calls.some(([, bindings]) => (bindings as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
+    expect(databaseQuery.mock.calls.some(([, bindings]) => bindings && (bindings as Record<string, unknown>).next_phase === 'teardown-release-required')).toBe(false);
   });
 
   it('normalizes a release-required journal deletion failure', async () => {
     const d = deps({ caller: {
       ...(deps().caller as unknown as Record<string, unknown>),
       databaseQuery: vi.fn().mockImplementation((query: string) => {
-        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-release-required', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }] }] };
-        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
+        if (query.startsWith('SELECT kind')) return databaseResult([{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-release-required', teardown_run_id: 'tear-run', created_at: 'now', updated_at: 'now' }]);
+        if (query.startsWith('SELECT phase')) return databaseResult([]);
         if (query.startsWith('DELETE postgres_operation')) throw new Error('private database detail');
-        return { results: [{ statement: 0, result: ['tear-1'] }] };
+        return databaseResult(['tear-1']);
       }),
     } as unknown as RPCCaller });
     await expect(recoverTeardownOnBoot(d)).rejects.toThrow('PostgreSQL lifecycle recovery is required');
@@ -178,8 +182,8 @@ describe('lifecycle boot recovery', () => {
       ...(deps().caller as unknown as Record<string, unknown>),
       getRuns: vi.fn().mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 }),
       databaseQuery: vi.fn().mockImplementation((query: string) => {
-        if (query.startsWith('SELECT kind')) return { results: [{ statement: 0, result: [{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-starting', teardown_run_id: null, created_at: 'now', updated_at: 'now' }] }] };
-        if (query.startsWith('SELECT phase')) return { results: [{ statement: 0, result: [] }] };
+        if (query.startsWith('SELECT kind')) return databaseResult([{ kind: 'teardown', operation_id: 'tear-1', resource_id: 'resource-1', phase: 'teardown-starting', teardown_run_id: null, created_at: 'now', updated_at: 'now' }]);
+        if (query.startsWith('SELECT phase')) return databaseResult([]);
         throw new Error('private mutation detail');
       }),
     } as unknown as RPCCaller });
