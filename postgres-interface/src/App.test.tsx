@@ -76,6 +76,33 @@ const databaseError = {
 };
 
 describe('App lifecycle and resource routing', () => {
+  it('renders initial loading inside the manager shell', () => {
+    const current = appClient({
+      getManager: vi.fn().mockReturnValue(new Promise(() => undefined)),
+    });
+
+    render(<App createClient={() => current} />);
+    expect(screen.getByRole('heading', { name: 'PostgreSQL manager' })).toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('Loading manager state');
+  });
+
+  it('renders fatal storage failure once in the manager shell', async () => {
+    const current = appClient({
+      databaseQuery: vi.fn().mockResolvedValue({
+        results: [{ statement: 0, status: 'ERR', time: '1ms', result: 'private' }],
+      }),
+    });
+
+    render(<App createClient={() => current} />);
+    expect(await screen.findByRole('heading', {
+      name: 'Manager storage is unavailable',
+    })).toBeVisible();
+    expect(screen.getAllByText('Unable to initialize PostgreSQL manager storage'))
+      .toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
+    expect(screen.queryByText('private')).not.toBeInTheDocument();
+  });
+
   it('initializes both tables before the first recovery read', async () => {
     const queries: string[] = [];
     const current = appClient({

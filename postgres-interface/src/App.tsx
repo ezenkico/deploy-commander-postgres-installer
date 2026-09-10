@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { RPC, type Events } from '@ezenki/deploy-commander-installer-interface';
 import ManagerDashboard, { type LifecycleAction } from './components/ManagerDashboard';
+import ActionButton from './components/ActionButton';
 import ConnectionRequest from './components/ConnectionRequest';
+import ManagerShell from './components/ManagerShell';
+import StatusPanel from './components/StatusPanel';
 import { createInterfaceClient } from './lib/interfaceClient';
 import { createRunEventSource } from './lib/runMonitor';
 import { findPrimaryResource, readPrimaryState, type PrimaryState } from './lib/primaryState';
@@ -233,13 +236,31 @@ export default function App({ createClient = productionClient }: AppProps) {
   };
 
   const current = presentation?.factory === createClient ? presentation : null;
-  if (!current) return <div role="status">Loading</div>;
+  if (!current) {
+    return <ManagerShell badge={{ label: 'Loading', tone: 'progress' }}>
+      <StatusPanel
+        tone="progress"
+        eyebrow="Manager startup"
+        title="Loading manager state"
+        role="status"
+      >
+        Checking PostgreSQL installation and recovery state.
+      </StatusPanel>
+    </ManagerShell>;
+  }
   const { client, manager, view } = current;
   if (view.kind === 'error') {
-    return <div>
-      <p role="alert">{view.message}</p>
-      <button type="button" onClick={requestRefresh}>Retry</button>
-    </div>;
+    return <ManagerShell badge={{ label: 'Unavailable', tone: 'danger' }}>
+      <StatusPanel
+        tone="danger"
+        eyebrow="Manager startup"
+        title="Manager storage is unavailable"
+        role="alert"
+        actions={<ActionButton tone="secondary" onClick={requestRefresh}>Retry</ActionButton>}
+      >
+        {view.message}
+      </StatusPanel>
+    </ManagerShell>;
   }
   if (view.kind === 'connection') {
     return <ConnectionRequest caller={client.caller} events={client.events} wire={client.wire} currentManagerId={manager} callingManagerId={view.callerId} resource={view.resource} primary={view.primary} initialError={view.error} initialResult={view.result} />;
