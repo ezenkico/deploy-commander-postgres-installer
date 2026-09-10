@@ -8,6 +8,7 @@ import type { ReadyPrimaryState } from './primaryState';
 
 const resource: RPC.ResourceItem = {
   id: 'resource-1', type: 'postgres', name: 'postgres', external: false,
+  manager: 'postgres-manager',
   created_at: '2026-08-30T00:00:00.000Z', updated_at: '2026-08-30T00:00:00.000Z',
 };
 const platform: PlatformConnection = { type: 'Platform', data: { network: 'postgres-network' } };

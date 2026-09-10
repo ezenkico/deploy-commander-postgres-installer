@@ -3,7 +3,10 @@ import type { RPCCaller, RPC } from '@ezenki/deploy-commander-installer-interfac
 import { installPostgres, recoverInstallationOnBoot, recoverTeardownOnBoot, teardownPostgres, type InstallationWorkflowDeps } from './installationLifecycle';
 import { createRunEventSource } from './runMonitor';
 
-const resource: RPC.ResourceItem = { id: 'resource-1', type: 'postgres', name: 'postgres', external: false, created_at: 'now', updated_at: 'now' };
+const resource: RPC.ResourceItem = {
+  id: 'resource-1', type: 'postgres', name: 'postgres', external: false,
+  manager: 'postgres-manager', created_at: 'now', updated_at: 'now',
+};
 const platform = { type: 'Platform' as const, data: { network: 'postgres-network' } };
 const primaryRow = {
   phase: 'ready', operation_id: 'install-1', admin_username: 'pg_admin_0123456789abcdef0123456789abcdef', admin_password: 'secret',
