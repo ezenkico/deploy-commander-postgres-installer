@@ -32,6 +32,14 @@ function managerId(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
+function bootErrorMessage(error: unknown): string {
+  if (error instanceof ManagerDatabaseInitializationError) return error.message;
+  if (error instanceof Error && error.message === 'Unable to identify the PostgreSQL manager') {
+    return error.message;
+  }
+  return 'Unable to load PostgreSQL manager state';
+}
+
 function callerId(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
@@ -204,11 +212,7 @@ export default function App({ createClient = productionClient }: AppProps) {
         manager: '',
         view: {
           kind: 'error',
-          message: error instanceof ManagerDatabaseInitializationError
-            ? error.message
-            : error instanceof Error
-            ? error.message
-            : 'Unable to load PostgreSQL manager state',
+          message: bootErrorMessage(error),
         },
       });
     });

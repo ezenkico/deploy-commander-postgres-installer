@@ -141,6 +141,18 @@ describe('App lifecycle and resource routing', () => {
     expect(log).not.toHaveBeenCalled();
   });
 
+  it('maps unexpected boot errors to a fixed safe message', async () => {
+    const current = appClient({
+      getMetadata: vi.fn().mockRejectedValue(new Error('private backend detail')),
+    });
+
+    render(<App createClient={() => current} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Unable to load PostgreSQL manager state',
+    );
+    expect(screen.queryByText('private backend detail')).not.toBeInTheDocument();
+  });
+
   it('aborts an in-flight lifecycle wait when the app unmounts', async () => {
     let actionSignal: AbortSignal | undefined;
     vi.spyOn(installationLifecycle, 'installPostgres').mockImplementation(
