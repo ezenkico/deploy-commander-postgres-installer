@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import type { RPC } from '@ezenki/deploy-commander-installer-interface';
 import ActionButton from './ActionButton';
+import ConfirmDialog from './ConfirmDialog';
 import ManagerShell, { type ShellBadgeTone } from './ManagerShell';
 import StatusPanel from './StatusPanel';
 import type { PrimaryState } from '../lib/primaryState';
@@ -37,6 +39,8 @@ export default function ManagerDashboard({
   onResetPermission,
   resourceAmbiguous = false,
 }: ManagerDashboardProps) {
+  const [confirmingTeardown, setConfirmingTeardown] = useState(false);
+  const [teardownSubmitted, setTeardownSubmitted] = useState(false);
   const busy = activeAction !== null;
   const ready = isReady(resource, primary);
   const legacy = resource !== null && primary === null;
@@ -44,6 +48,10 @@ export default function ManagerDashboard({
     && primary?.phase === 'teardown-failed'
     && primary.resourceId === resource.id;
   const recovery = resourceAmbiguous || (!ready && !legacy && (resource !== null || primary !== null));
+  const requestTeardown = () => {
+    setTeardownSubmitted(false);
+    setConfirmingTeardown(true);
+  };
 
   let badge: { label: string; tone: ShellBadgeTone };
   if (activeAction === 'install') {
@@ -94,7 +102,7 @@ export default function ManagerDashboard({
   } else if (teardownFailed) {
     content = (
       <StatusPanel tone="danger" eyebrow="Teardown failed" title="PostgreSQL teardown needs retrying" role="alert" actions={(
-        <ActionButton tone="danger" disabled={busy} onClick={onTeardown}>Retry teardown</ActionButton>
+        <ActionButton tone="danger" disabled={busy} onClick={requestTeardown}>Retry teardown</ActionButton>
       )}>
         The previous teardown run failed. Retry teardown to remove this installation safely.
       </StatusPanel>
@@ -125,7 +133,7 @@ export default function ManagerDashboard({
         <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 p-4">
           <h3 className="text-sm font-semibold text-rose-900">Danger zone</h3>
           <p className="mt-1 text-sm text-rose-800">Remove the shared service and its logical databases.</p>
-          <ActionButton tone="danger" className="mt-4" disabled={busy} onClick={onTeardown}>
+          <ActionButton tone="danger" className="mt-4" disabled={busy} onClick={requestTeardown}>
             Teardown PostgreSQL
           </ActionButton>
         </div>
@@ -134,7 +142,7 @@ export default function ManagerDashboard({
   } else if (legacy) {
     content = (
       <StatusPanel tone="warning" eyebrow="Action required" title="PostgreSQL requires reinstall" role="alert" actions={(
-        <ActionButton tone="danger" disabled={busy} onClick={onTeardown}>Teardown PostgreSQL</ActionButton>
+        <ActionButton tone="danger" disabled={busy} onClick={requestTeardown}>Teardown PostgreSQL</ActionButton>
       )}>
         This installation predates private administrator state. Teardown and reinstall are required.
       </StatusPanel>
@@ -157,5 +165,19 @@ export default function ManagerDashboard({
     );
   }
 
-  return <ManagerShell badge={badge}>{content}</ManagerShell>;
+  return <ManagerShell badge={badge}>
+    {content}
+    {confirmingTeardown && <ConfirmDialog
+      busy={teardownSubmitted}
+      onCancel={() => {
+        if (!teardownSubmitted) setConfirmingTeardown(false);
+      }}
+      onConfirm={() => {
+        if (teardownSubmitted) return;
+        setTeardownSubmitted(true);
+        onTeardown();
+        setConfirmingTeardown(false);
+      }}
+    />}
+  </ManagerShell>;
 }

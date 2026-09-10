@@ -41,7 +41,7 @@ describe('ManagerDashboard', () => {
     expect(onInstall).toHaveBeenCalledOnce();
   });
 
-  it('shows the installed card and destructive teardown action for ready state', () => {
+  it('shows the installed card and requires confirmation before teardown', () => {
     const onTeardown = vi.fn();
     renderDashboard({ resource, primary, permissionRemembered: true, onTeardown });
     expect(screen.getByRole('heading', { name: 'PostgreSQL is installed' })).toBeInTheDocument();
@@ -50,7 +50,28 @@ describe('ManagerDashboard', () => {
     expect(screen.queryByText('pg_admin_hidden')).not.toBeInTheDocument();
     expect(screen.queryByText('never-render')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Teardown PostgreSQL' }));
+    expect(screen.getByRole('dialog', { name: 'Teardown PostgreSQL?' })).toBeVisible();
+    expect(onTeardown).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm teardown' }));
     expect(onTeardown).toHaveBeenCalledOnce();
+  });
+
+  it('cancels teardown confirmation without submitting', () => {
+    const onTeardown = vi.fn();
+    renderDashboard({ resource, primary, onTeardown });
+    fireEvent.click(screen.getByRole('button', { name: 'Teardown PostgreSQL' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onTeardown).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: 'Teardown PostgreSQL?' })).not.toBeInTheDocument();
+  });
+
+  it('cancels teardown confirmation with Escape without submitting', () => {
+    const onTeardown = vi.fn();
+    renderDashboard({ resource, primary, onTeardown });
+    fireEvent.click(screen.getByRole('button', { name: 'Teardown PostgreSQL' }));
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Teardown PostgreSQL?' }), { key: 'Escape' });
+    expect(onTeardown).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: 'Teardown PostgreSQL?' })).not.toBeInTheDocument();
   });
 
   it('shows persisted recovery state with a retry action', () => {
@@ -65,16 +86,23 @@ describe('ManagerDashboard', () => {
   });
 
   it('identifies legacy resources and allows teardown without offering a new install', () => {
-    renderDashboard({ resource });
+    const onTeardown = vi.fn();
+    renderDashboard({ resource, onTeardown });
     expect(screen.getByRole('heading', { name: 'PostgreSQL requires reinstall' })).toBeInTheDocument();
     expect(screen.getByText(/predates private administrator state/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install PostgreSQL' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Teardown PostgreSQL' }));
+    expect(onTeardown).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm teardown' }));
+    expect(onTeardown).toHaveBeenCalledOnce();
   });
 
   it('offers an actual teardown retry after a failed teardown', () => {
     const onTeardown = vi.fn();
     renderDashboard({ resource, primary: { ...primary, phase: 'teardown-failed' }, onTeardown });
     fireEvent.click(screen.getByRole('button', { name: 'Retry teardown' }));
+    expect(onTeardown).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm teardown' }));
     expect(onTeardown).toHaveBeenCalledOnce();
     expect(screen.queryByRole('button', { name: 'Retry recovery' })).not.toBeInTheDocument();
   });
