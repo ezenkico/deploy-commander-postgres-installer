@@ -53,4 +53,11 @@ describe('ConfirmDialog', () => {
     expect(onCancel).not.toHaveBeenCalled();
     expect(onConfirm).not.toHaveBeenCalled();
   });
+
+  it('keeps the dialog panel scrollable within a short viewport', () => {
+    render(<ConfirmDialog busy={false} onCancel={vi.fn()} onConfirm={vi.fn()} />);
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]', 'overflow-y-auto');
+  });
 });

@@ -47,6 +47,12 @@ function bootErrorMessage(error: unknown): string {
   return 'Unable to load PostgreSQL manager state';
 }
 
+function bootErrorTitle(message: string): string {
+  return message === 'Unable to initialize PostgreSQL manager storage'
+    ? 'Manager storage is unavailable'
+    : 'Manager startup requires attention';
+}
+
 function callerId(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
@@ -101,6 +107,7 @@ interface AppPresentation {
 export default function App({ createClient = productionClient }: AppProps) {
   const [presentation, setPresentation] = useState<AppPresentation | null>(null);
   const [activeAction, setActiveAction] = useState<LifecycleAction>(null);
+  const [failedAction, setFailedAction] = useState<Exclude<LifecycleAction, null> | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const clientRef = useRef<AppClient | null>(null);
@@ -231,6 +238,7 @@ export default function App({ createClient = productionClient }: AppProps) {
 
   const requestRefresh = () => {
     setActionError(null);
+    setFailedAction(null);
     setPresentation(null);
     setRefreshKey((value) => value + 1);
   };
@@ -254,7 +262,7 @@ export default function App({ createClient = productionClient }: AppProps) {
       <StatusPanel
         tone="danger"
         eyebrow="Manager startup"
-        title="Manager storage is unavailable"
+        title={bootErrorTitle(view.message)}
         role="alert"
         actions={<ActionButton tone="secondary" onClick={requestRefresh}>Retry</ActionButton>}
       >
@@ -277,12 +285,14 @@ export default function App({ createClient = productionClient }: AppProps) {
     actionControllerRef.current = controller;
     setActiveAction(kind);
     setActionError(null);
+    setFailedAction(null);
     try {
       await action(controller.signal);
       requestRefresh();
     }
     catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
+      setFailedAction(kind === 'teardown' && error instanceof Error && error.message === 'PostgreSQL teardown failed' ? kind : null);
       setActionError(error instanceof Error && error.message.includes('recovery') ? 'PostgreSQL recovery is required' : 'Unable to complete PostgreSQL lifecycle action');
     }
     finally {
@@ -299,6 +309,7 @@ export default function App({ createClient = productionClient }: AppProps) {
     error={actionError ?? view.error}
     permissionRemembered={permissionRemembered}
     resourceAmbiguous={view.ambiguous}
+    failedAction={failedAction ?? undefined}
     onInstall={() => {
       void runAction('install', (signal) => installPostgres({
         caller: appClient.caller,

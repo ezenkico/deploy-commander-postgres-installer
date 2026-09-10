@@ -201,6 +201,29 @@ describe('App lifecycle and resource routing', () => {
       'Unable to load PostgreSQL manager state',
     );
     expect(screen.queryByText('private backend detail')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Manager startup requires attention' })).toBeInTheDocument();
+  });
+
+  it('offers a confirmed teardown retry after a terminal teardown failure', async () => {
+    vi.spyOn(installationLifecycle, 'teardownPostgres').mockRejectedValue(new Error('PostgreSQL teardown failed'));
+    const current = appClient({
+      getMyResources: vi.fn().mockResolvedValue({ items: [{ id: 'resource-1', type: 'postgres', name: 'postgres', external: false }], limit: 50, offset: 0, total: 1 }),
+      databaseQuery: vi.fn().mockImplementation(async (query: string) => {
+        if (query.startsWith('SELECT phase')) return databaseResult([primary]);
+        return databaseResult([]);
+      }),
+    });
+
+    render(<App createClient={() => current} />);
+    await screen.findByRole('heading', { name: 'PostgreSQL is installed' });
+    screen.getByRole('button', { name: 'Teardown PostgreSQL' }).click();
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Teardown PostgreSQL?' })).toBeVisible());
+    screen.getByRole('button', { name: 'Confirm teardown' }).click();
+
+    expect(await screen.findByRole('button', { name: 'Retry teardown' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Retry recovery' })).not.toBeInTheDocument();
+    screen.getByRole('button', { name: 'Retry teardown' }).click();
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Teardown PostgreSQL?' })).toBeVisible());
   });
 
   it('aborts an in-flight lifecycle wait when the app unmounts', async () => {

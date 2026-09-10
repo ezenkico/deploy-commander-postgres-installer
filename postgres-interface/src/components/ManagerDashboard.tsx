@@ -19,6 +19,7 @@ export interface ManagerDashboardProps {
   onRetry: () => void;
   onResetPermission: () => void;
   resourceAmbiguous?: boolean;
+  failedAction?: LifecycleAction;
 }
 
 function isReady(resource: RPC.ResourceItem | null, primary: PrimaryState | null): boolean {
@@ -38,6 +39,7 @@ export default function ManagerDashboard({
   onRetry,
   onResetPermission,
   resourceAmbiguous = false,
+  failedAction = null,
 }: ManagerDashboardProps) {
   const [confirmingTeardown, setConfirmingTeardown] = useState(false);
   const [teardownSubmitted, setTeardownSubmitted] = useState(false);
@@ -45,8 +47,8 @@ export default function ManagerDashboard({
   const ready = isReady(resource, primary);
   const legacy = resource !== null && primary === null;
   const teardownFailed = resource !== null
-    && primary?.phase === 'teardown-failed'
-    && primary.resourceId === resource.id;
+    && ((primary?.phase === 'teardown-failed' && primary.resourceId === resource.id)
+      || failedAction === 'teardown');
   const recovery = resourceAmbiguous || (!ready && !legacy && (resource !== null || primary !== null));
   const requestTeardown = () => {
     setTeardownSubmitted(false);
@@ -58,12 +60,12 @@ export default function ManagerDashboard({
     badge = { label: 'Installing', tone: 'progress' };
   } else if (activeAction === 'teardown') {
     badge = { label: 'Tearing down', tone: 'progress' };
-  } else if (ready) {
-    badge = { label: 'Ready', tone: 'success' };
-  } else if (resourceAmbiguous || error) {
+  } else if (resourceAmbiguous) {
     badge = { label: 'Attention', tone: 'danger' };
   } else if (teardownFailed || recovery) {
     badge = { label: 'Recovery', tone: 'warning' };
+  } else if (error) {
+    badge = { label: 'Attention', tone: 'danger' };
   } else if (legacy) {
     badge = { label: 'Attention', tone: 'warning' };
   } else {
@@ -91,20 +93,20 @@ export default function ManagerDashboard({
         Multiple PostgreSQL resources were found. Teardown and reinstall are required.
       </StatusPanel>
     );
-  } else if (error) {
-    content = (
-      <StatusPanel tone="danger" eyebrow="Attention required" title="PostgreSQL manager needs attention" role="alert" actions={(
-        <ActionButton tone="secondary" disabled={busy} onClick={onRetry}>Retry recovery</ActionButton>
-      )}>
-        {error}
-      </StatusPanel>
-    );
   } else if (teardownFailed) {
     content = (
       <StatusPanel tone="danger" eyebrow="Teardown failed" title="PostgreSQL teardown needs retrying" role="alert" actions={(
         <ActionButton tone="danger" disabled={busy} onClick={requestTeardown}>Retry teardown</ActionButton>
       )}>
         The previous teardown run failed. Retry teardown to remove this installation safely.
+      </StatusPanel>
+    );
+  } else if (error) {
+    content = (
+      <StatusPanel tone="danger" eyebrow="Attention required" title="PostgreSQL manager needs attention" role="alert" actions={(
+        <ActionButton tone="secondary" disabled={busy} onClick={onRetry}>Retry recovery</ActionButton>
+      )}>
+        {error}
       </StatusPanel>
     );
   } else if (ready) {

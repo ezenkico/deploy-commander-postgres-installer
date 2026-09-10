@@ -10,7 +10,7 @@ export interface ConfirmDialogProps {
 export default function ConfirmDialog({ busy, onConfirm, onCancel }: ConfirmDialogProps) {
   const dialogRef = useDialogFocus<HTMLDivElement>(!busy, onCancel);
 
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+  return <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/60 p-4 backdrop-blur-sm">
     <div
       ref={dialogRef}
       role="dialog"
@@ -19,7 +19,7 @@ export default function ConfirmDialog({ busy, onConfirm, onCancel }: ConfirmDial
       tabIndex={-1}
       aria-labelledby="teardown-dialog-title"
       aria-describedby="teardown-dialog-description"
-      className="w-full max-w-lg rounded-2xl border border-rose-100 bg-white p-6 shadow-2xl outline-none sm:p-7"
+      className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-rose-100 bg-white p-6 shadow-2xl outline-none sm:p-7"
     >
       <p className="text-xs font-bold uppercase tracking-[0.16em] text-rose-700">Destructive action</p>
       <h2 id="teardown-dialog-title" className="mt-2 text-2xl font-semibold tracking-tight">Teardown PostgreSQL?</h2>

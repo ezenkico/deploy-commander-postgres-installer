@@ -19,7 +19,7 @@ export function PermissionDialog({
   const dialogRef = useDialogFocus<HTMLDivElement>(!busy, onCancel);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/60 p-4 backdrop-blur-sm">
       <div
         ref={dialogRef}
         role="dialog"
@@ -28,7 +28,7 @@ export function PermissionDialog({
         tabIndex={-1}
         aria-labelledby="permission-dialog-title"
         aria-describedby="permission-dialog-description"
-        className="w-full max-w-lg rounded-2xl border border-indigo-100 bg-white p-6 shadow-2xl outline-none sm:p-7"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-indigo-100 bg-white p-6 shadow-2xl outline-none sm:p-7"
       >
         <p className="text-xs font-bold uppercase tracking-[0.16em] text-indigo-700">Permission request</p>
         <h2 id="permission-dialog-title" className="mt-2 text-2xl font-semibold tracking-tight">

@@ -24,6 +24,12 @@ describe('PermissionDialog', () => {
     expect(screen.getByTestId('calling-manager-id')).toHaveClass('break-all');
   });
 
+  it('keeps the dialog panel scrollable within a short viewport', () => {
+    renderDialog({ callerId: `manager-${'a'.repeat(160)}` });
+
+    expect(screen.getByRole('dialog')).toHaveClass('max-h-[calc(100dvh-2rem)]', 'overflow-y-auto');
+  });
+
   it('renders an accessible dialog identifying the untrusted caller', () => {
     renderDialog();
 

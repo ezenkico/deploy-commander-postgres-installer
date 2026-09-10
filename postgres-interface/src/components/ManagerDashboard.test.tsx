@@ -121,6 +121,31 @@ describe('ManagerDashboard', () => {
     expect(screen.queryByText('never-render')).not.toBeInTheDocument();
   });
 
+  it('does not show Ready when an error accompanies ready state', () => {
+    renderDashboard({ error: 'PostgreSQL recovery is required', resource, primary });
+
+    expect(screen.getByText('Attention')).toBeInTheDocument();
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'PostgreSQL manager needs attention' })).toBeInTheDocument();
+  });
+
+  it('does not show Ready when the resource state is ambiguous', () => {
+    renderDashboard({ resourceAmbiguous: true, resource, primary });
+
+    expect(screen.getByText('Attention')).toBeInTheDocument();
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'PostgreSQL resource state is ambiguous' })).toBeInTheDocument();
+  });
+
+  it('keeps teardown retry precedence over a supplied action error', () => {
+    const onTeardown = vi.fn();
+    renderDashboard({ resource, primary: { ...primary, phase: 'teardown-failed' }, error: 'Unable to complete PostgreSQL lifecycle action', onTeardown });
+
+    expect(screen.getByText('Recovery')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry teardown' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry recovery' })).not.toBeInTheDocument();
+  });
+
   it('describes normal installation progress without recovery wording', () => {
     renderDashboard({ activeAction: 'install' });
     expect(screen.getByRole('status')).toHaveTextContent('Installing PostgreSQL');
